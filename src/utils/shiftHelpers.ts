@@ -23,7 +23,7 @@ export function abbrev(n: string) {
 
 export function xacDinhCa(ngay: Date, kip: number) {
   const diff = Math.floor((ngay.getTime() - BASE_DATE.getTime()) / 86400000);
-  return SHIFTS[kip - 1][((diff % 6) + 6) % 6];
+  return SHIFTS[kip - 1][((diff % 5) + 5) % 5];
 }
 
 export function timNghi(cd: string, kip: number, staffData: string[][]) {

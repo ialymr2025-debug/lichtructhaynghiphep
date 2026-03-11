@@ -189,8 +189,10 @@ export default function App() {
         absentKip: it.absentKip, absentTen: it.absentTen,
         kipThay: it.kipThay, nguoiThay: it.nguoiThay,
         isConflict: it.isConflict, conflictNote: it.conflictNote || '',
-        isOverlapDay: it.isOverlapDay, isCKChain: true,
-        isSwap: it.isSwap || false, isSwapCRow: false
+        isOverlapDay: it.isOverlapDay, 
+        isCKChain: it.isCKChain,
+        isSwap: it.isSwap || false, 
+        isSwapCRow: false
       });
     });
     allRows.sort((a, b) => {
@@ -431,7 +433,15 @@ export default function App() {
                           </td>
                           <td><span className={`badge b${row.ca}`}>{row.ca}</span></td>
                           <td className="text-[12px] text-var(--txt2)">
-                            {row.isCKChain ? (
+                            {row.isSwap ? (
+                              <>
+                                <span className="text-[#22c55e] text-[11px]">đổi ca</span>
+                                <br />
+                                {row.absentTen}
+                                <br />
+                                <span className="text-[10px]">Kíp {row.absentKip}</span>
+                              </>
+                            ) : row.isCKChain ? (
                               <>
                                 <span className="text-[#a855f7] text-[11px]">thay ca</span>
                                 <br />
@@ -450,7 +460,14 @@ export default function App() {
                           <td className="text-var(--txt2)">Kíp {row.kipThay}</td>
                           <td className="font-semibold text-var(--acc2)">{row.nguoiThay}</td>
                           <td className="max-w-[140px]">
-                            {row.isCKChain ? (
+                            {row.isSwap ? (
+                              <>
+                                <span className="conflict-badge bg-[#22c55e1a] text-[#22c55e] border-[#22c55e4d]">⇄ Đổi ca</span>
+                                {row.conflictNote && (
+                                  <div className="text-[10px] text-var(--txt2)">{row.conflictNote}</div>
+                                )}
+                              </>
+                            ) : row.isCKChain ? (
                               <>
                                 <span className="conflict-badge bg-[#a855f71a] text-[#a855f7] border-[#a855f74d]">⥵ C→K</span>
                                 <br />
@@ -477,6 +494,8 @@ export default function App() {
               <div className="legend-item"><span className="badge bN">N</span>Ca Ngày (6:00–14:00)</div>
               <div className="legend-item"><span className="badge bC">C</span>Ca Chiều (14:00–22:00)</div>
               <div className="legend-item"><span className="badge bK">K</span>Ca Đêm (22:00–6:00)</div>
+              <div className="legend-item"><span className="conflict-badge bg-[#22c55e1a] text-[#22c55e] border-[#22c55e4d]">⇄ O tròn</span>Ca nghỉ (O) ngay sau ca đêm (K) - Ưu tiên hỗ trợ ca N/C</div>
+              <div className="legend-item"><span className="conflict-badge bg-[#eab3081a] text-[#eab308] border-[#eab3084d]">⚡ Pre-Relief</span>Hỗ trợ kíp thay chính nghỉ ngơi trước ca trực quan trọng</div>
             </div>
           </div>
         </div>

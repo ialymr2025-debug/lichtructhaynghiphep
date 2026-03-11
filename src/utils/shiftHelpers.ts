@@ -23,7 +23,7 @@ export function abbrev(n: string) {
 
 export function xacDinhCa(ngay: Date, kip: number) {
   const diff = Math.floor((ngay.getTime() - BASE_DATE.getTime()) / 86400000);
-  return SHIFTS[kip - 1][((diff % 5) + 5) % 5];
+  return SHIFTS[kip - 1][((diff % 6) + 6) % 6];
 }
 
 export function timNghi(cd: string, kip: number, staffData: string[][]) {
@@ -35,6 +35,7 @@ export function timNghi(cd: string, kip: number, staffData: string[][]) {
 }
 
 export function timThay(kipThay: number, cd: string, staffData: string[][]) {
+  if (kipThay < 1 || kipThay > 5) return '';
   for (let i = 0; i < staffData.length; i++) {
     const r = staffData[i];
     if (r[0].trim() === cd && r[kipThay] && r[kipThay].trim()) return r[kipThay].trim();

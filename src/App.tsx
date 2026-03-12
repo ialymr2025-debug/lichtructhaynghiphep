@@ -556,12 +556,9 @@ export default function App() {
             </div>
 
             <div className="legend">
-              <div className="legend-item"><span className="badge bN">N</span>Ca Ngày (6:00–14:00)</div>
-              <div className="legend-item"><span className="badge bC">C</span>Ca Chiều (14:00–22:00)</div>
-              <div className="legend-item"><span className="badge bK">K</span>Ca Đêm (22:00–6:00)</div>
-              <div className="legend-item"><span className="conflict-badge bg-[#22c55e1a] text-[#22c55e] border-[#22c55e4d]">⇄ O tròn</span>Ca nghỉ (O) ngay sau ca đêm (K) - Ưu tiên hỗ trợ ca N/C</div>
-              <div className="legend-item"><span className="conflict-badge bg-[#eab3081a] text-[#eab308] border-[#eab3084d]">⚡ Pre-Relief</span>Hỗ trợ kíp thay chính nghỉ ngơi trước ca trực quan trọng</div>
-            </div>
+              <div className="legend-item"><span className="badge bN">N</span>Ca Ngày (8:00–16:00)</div>
+              <div className="legend-item"><span className="badge bC">C</span>Ca Chiều (16:00–22:20)</div>
+              <div className="legend-item"><span className="badge bK">K</span>Ca Đêm (22:20–8:00)</div>
           </div>
         </div>
       )}

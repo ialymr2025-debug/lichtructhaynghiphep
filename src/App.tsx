@@ -24,7 +24,7 @@ export default function App() {
   });
   const [chucDanh, setChucDanh] = useState('');
   const [kipNghi, setKipNghi] = useState('');
-  const [additionalLeaves, setAdditionalLeaves] = useState<{ kip: string, start: string, end: string }[]>([]);
+  const [additionalLeaves, setAdditionalLeaves] = useState<{ kip: string, start: string, end: string, chucDanh: string }[]>([]);
   const [showStaff, setShowStaff] = useState(false);
   const [alert, setAlert] = useState<string | null>(null);
   const [currentResult, setCurrentResult] = useState<any>(null);
@@ -47,7 +47,7 @@ export default function App() {
       setAlert('⚠ Vui lòng chọn chức danh trước!');
       return;
     }
-    setAdditionalLeaves([...additionalLeaves, { kip: '', start: '', end: '' }]);
+    setAdditionalLeaves([...additionalLeaves, { kip: '', start: '', end: '', chucDanh: chucDanh || (staffData[0] ? staffData[0][0] : '') }]);
   };
 
   const removeConcurrentLeave = (idx: number) => {
@@ -88,31 +88,31 @@ export default function App() {
     const addErr: string[] = [];
     additionalLeaves.forEach((al, idx) => {
       if (!al.kip && !al.start && !al.end) return;
-      if (!al.kip || !al.start || !al.end) {
+      if (!al.kip || !al.start || !al.end || !al.chucDanh) {
         addErr.push(`Người nghỉ #${idx + 2} thiếu thông tin`);
         return;
       }
       const alKip = +al.kip;
-      if (alKip === kip) {
-        addErr.push(`Người nghỉ #${idx + 2} trùng kíp với người nghỉ chính`);
+      const alChucDanh = al.chucDanh;
+
+      // Check for duplicate kip within the same chucDanh
+      if (allLeaves.some(l => l.kip === alKip && l.chucDanh === alChucDanh)) {
+        addErr.push(`Kíp ${alKip} của chức danh ${alChucDanh} đã được thêm`);
         return;
       }
-      if (allLeaves.some(l => l.kip === alKip)) {
-        addErr.push(`Kíp ${alKip} đã được thêm`);
-        return;
-      }
+
       const alStart = new Date(al.start + 'T00:00:00');
       const alEnd = new Date(al.end + 'T00:00:00');
       if (alStart > alEnd) {
         addErr.push(`Người nghỉ #${idx + 2} ngày bắt đầu sau ngày kết thúc`);
         return;
       }
-      const alTen = timNghi(chucDanh, alKip, staffData);
+      const alTen = timNghi(alChucDanh, alKip, staffData);
       if (!alTen) {
-        addErr.push(`Không tìm thấy "${chucDanh}" trong Kíp ${alKip}`);
+        addErr.push(`Không tìm thấy "${alChucDanh}" trong Kíp ${alKip}`);
         return;
       }
-      allLeaves.push({ kip: alKip, start: alStart, end: alEnd, ten: alTen, chucDanh });
+      allLeaves.push({ kip: alKip, start: alStart, end: alEnd, ten: alTen, chucDanh: alChucDanh });
     });
 
     if (addErr.length) {
@@ -122,14 +122,61 @@ export default function App() {
 
     setIsProcessing(true);
     setTimeout(() => {
-      const buildResult = buildMultiLeaveResults(allLeaves, chucDanh, staffData);
+      // Tự động phát hiện và bổ sung các vị trí thiếu nhân sự (ô trống trong danh sách)
+      // Nếu một chức danh có người nghỉ phép, các kíp đang thiếu người ở chức danh đó cũng sẽ được xếp lịch thay
+      const minStart = new Date(Math.min(...allLeaves.map(l => l.start.getTime())));
+      const maxEnd = new Date(Math.max(...allLeaves.map(l => l.end.getTime())));
+      const involvedTitles = Array.from(new Set(allLeaves.map(l => l.chucDanh)));
+      
+      involvedTitles.forEach(title => {
+        const row = staffData.find(r => r[0] === title);
+        if (row) {
+          for (let k = 1; k <= 5; k++) {
+            const staffName = row[k] ? row[k].trim() : '';
+            if (staffName === '') {
+              if (!allLeaves.some(l => l.kip === k && l.chucDanh === title)) {
+                allLeaves.push({
+                  kip: k,
+                  start: minStart,
+                  end: maxEnd,
+                  ten: `THIẾU NHÂN SỰ (Kíp ${k})`,
+                  chucDanh: title
+                });
+              }
+            }
+          }
+        }
+      });
+
+      // Group leaves by job title
+      const groups = allLeaves.reduce((acc, l) => {
+        if (!acc[l.chucDanh]) acc[l.chucDanh] = [];
+        acc[l.chucDanh].push(l);
+        return acc;
+      }, {} as Record<string, Leave[]>);
+
+      let mergedResults: any[] = [];
+      let mergedExtraRows: any[] = [];
+      let mergedHasConflict = false;
+      const mergedCoverCount: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+
+      Object.keys(groups).forEach(cd => {
+        const buildResult = buildMultiLeaveResults(groups[cd], cd, staffData);
+        mergedResults = [...mergedResults, ...buildResult.results];
+        mergedExtraRows = [...mergedExtraRows, ...buildResult.extraRows];
+        if (buildResult.hasConflict) mergedHasConflict = true;
+        for (let k = 1; k <= 5; k++) {
+          mergedCoverCount[k] += (buildResult.coverCount[k] || 0);
+        }
+      });
+
       setCurrentResult({
         ten, chucDanh, kip, start, end,
-        ketQua: buildResult.results[0].ketQua,
-        allResults: buildResult.results,
-        extraRows: buildResult.extraRows,
-        hasConflict: buildResult.hasConflict,
-        coverCount: buildResult.coverCount,
+        ketQua: mergedResults[0].ketQua,
+        allResults: mergedResults,
+        extraRows: mergedExtraRows,
+        hasConflict: mergedHasConflict,
+        coverCount: mergedCoverCount,
         isMulti: allLeaves.length > 1
       });
       setIsProcessing(false);
@@ -174,6 +221,7 @@ export default function App() {
           ngay: it.ngay, ca: it.ca,
           absentKip: res.kip,
           absentTen: res.ten,
+          chucDanh: res.chucDanh,
           kipThay: it.kipThay, nguoiThay: it.nguoiThay,
           isConflict: it.isConflict, conflictNote: it.conflictNote || '',
           isOverlapDay: it.isOverlapDay,
@@ -187,6 +235,7 @@ export default function App() {
       allRows.push({
         ngay: it.ngay, ca: it.ca,
         absentKip: it.absentKip, absentTen: it.absentTen,
+        chucDanh: it.chucDanh,
         kipThay: it.kipThay, nguoiThay: it.nguoiThay,
         isConflict: it.isConflict, conflictNote: it.conflictNote || '',
         isOverlapDay: it.isOverlapDay, 
@@ -205,9 +254,12 @@ export default function App() {
   const coverStats: Record<number, any> = {};
   allRows.forEach(row => {
     const k = row.kipThay;
-    if (!coverStats[k]) coverStats[k] = { total: 0, N: 0, C: 0, K: 0 };
+    const cd = row.chucDanh;
+    if (!coverStats[k]) coverStats[k] = { total: 0, N: 0, C: 0, K: 0, byCD: {} };
     coverStats[k].total++;
     coverStats[k][row.ca]++;
+    if (!coverStats[k].byCD[cd]) coverStats[k].byCD[cd] = 0;
+    coverStats[k].byCD[cd]++;
   });
 
   const isEvenDistribution = () => {
@@ -255,7 +307,7 @@ export default function App() {
         <div className="divider"></div>
         <div className="flex items-center justify-between mb-3">
           <span className="text-[12px] text-var(--txt2) font-semibold uppercase tracking-wider">
-            Người nghỉ đồng thời <span className="font-normal">(cùng chức danh)</span>
+            Người nghỉ đồng thời <span className="font-normal">(có thể khác chức danh)</span>
           </span>
           <button className="staff-toggle font-bold text-[13px]" onClick={addConcurrentLeave}>+ Thêm người nghỉ</button>
         </div>
@@ -268,6 +320,13 @@ export default function App() {
               </div>
               <div className="text-[11px] font-bold text-var(--acc) uppercase tracking-wider mb-3">Người nghỉ #{idx + 2}</div>
               <div className="g2">
+                <div className="field">
+                  <label>Chức danh</label>
+                  <select value={leave.chucDanh} onChange={e => updateConcurrentLeave(idx, 'chucDanh', e.target.value)}>
+                    <option value="">-- Chức danh --</option>
+                    {staffData.map(r => <option key={r[0]} value={r[0]}>{r[0]}</option>)}
+                  </select>
+                </div>
                 <div className="field">
                   <label>Kíp nghỉ</label>
                   <select value={leave.kip} onChange={e => updateConcurrentLeave(idx, 'kip', e.target.value)}>
@@ -380,7 +439,12 @@ export default function App() {
                 <div className="distrib-grid">
                   {Object.keys(coverStats).sort().map(kip => (
                     <div key={kip} className="distrib-item">
-                      <div className="text-[13px] font-bold text-var(--txt)">Kíp {kip} – {timThay(+kip, currentResult.chucDanh, staffData)}</div>
+                      <div className="text-[13px] font-bold text-var(--txt)">
+                        Kíp {kip} 
+                        <span className="text-[11px] font-normal text-var(--txt2) ml-1">
+                          ({Object.entries(coverStats[+kip].byCD).map(([cd, count]) => `${cd}: ${count}`).join(', ')})
+                        </span>
+                      </div>
                       <div className="mt-1.5 flex gap-1.5 items-center flex-wrap">
                         {coverStats[+kip].N > 0 && <span className="badge bN">N ×{coverStats[+kip].N}</span>}
                         {coverStats[+kip].C > 0 && <span className="badge bC">C ×{coverStats[+kip].C}</span>}
@@ -433,6 +497,7 @@ export default function App() {
                           </td>
                           <td><span className={`badge b${row.ca}`}>{row.ca}</span></td>
                           <td className="text-[12px] text-var(--txt2)">
+                            <div className="font-bold text-[10px] text-var(--acc) mb-0.5 uppercase">{row.chucDanh}</div>
                             {row.isSwap ? (
                               <>
                                 <span className="text-[#22c55e] text-[11px]">đổi ca</span>

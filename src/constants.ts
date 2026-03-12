@@ -15,14 +15,14 @@ export const DEFAULT_STAFF = [
 ];
 
 export const SHIFTS = [
-  ["C","O","K","O","N","O"],
-  ["O","C","O","K","O","N"],
-  ["N","O","C","O","K","O"],
-  ["O","N","O","C","O","K"],
-  ["K","O","N","O","C","O"]
+  ["N","C","O","K","O"],
+  ["K","O","N","C","O"],
+  ["C","O","K","O","N"],
+  ["O","N","C","O","K"],
+  ["O","K","O","N","C"]
 ];
 
-export const BASE_DATE = new Date(2025, 9, 3);
+export const BASE_DATE = new Date(2025, 9, 1);
 
 export const RULES: Record<number, Record<string, { k: number }>> = {
   1: { N: { k: 4 }, C: { k: 2 }, K: { k: 3 } },

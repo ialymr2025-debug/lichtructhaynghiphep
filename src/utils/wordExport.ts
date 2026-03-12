@@ -116,7 +116,7 @@ export function buildDocXml(currentResult: any, config: any) {
   const shiftOrd: Record<string, number> = { N: 0, C: 1, K: 2 };
   const MAX_PER_ROW = 4;
 
-  const allResults = [d];
+  const allResults = d.allResults;
   const extraRows = d.extraRows || [];
 
   const swapRows = extraRows.filter((r: any) => r.isSwap);
@@ -216,28 +216,36 @@ export function buildDocXml(currentResult: any, config: any) {
     });
   });
 
-  const swapNotes: string[] = [];
+  const notesByCD: Record<string, string[]> = {};
+
   allResults.forEach((res: any) => {
+    const cd = res.chucDanh || d.chucDanh || 'Trưởng ca';
     res.ketQua.forEach((it: any) => {
-      if (it.conflictNote && it.conflictNote.includes('Hoán đổi')) {
+      if (it.conflictNote && (it.conflictNote.includes('Đổi ca') || it.conflictNote.includes('Hoán đổi'))) {
+        if (!notesByCD[cd]) notesByCD[cd] = [];
         const dateStr = it.ca + '/' + fmtVN(it.ngay).slice(0, 5);
-        swapNotes.push(`${abbrev(it.nguoiThay)} trực thay ${abbrev(res.ten)} ca ${dateStr}`);
+        notesByCD[cd].push(`${abbrev(it.nguoiThay)} trực thay ${abbrev(it.swapAbsentTen || res.ten)} ca ${dateStr}`);
       }
     });
   });
 
   extraRows.forEach((ex: any) => {
     if (ex.isSwap) {
+      const cd = ex.chucDanh || d.chucDanh || 'Trưởng ca';
+      if (!notesByCD[cd]) notesByCD[cd] = [];
       const dateStr = ex.ca + '/' + fmtVN(ex.ngay).slice(0, 5);
-      swapNotes.push(`${abbrev(ex.nguoiThay)} trực thay ${abbrev(ex.absentTen)} ca ${dateStr}`);
+      notesByCD[cd].push(`${abbrev(ex.nguoiThay)} trực thay ${abbrev(ex.absentTen)} ca ${dateStr}`);
     }
   });
 
-  if (swapNotes.length > 0) {
-    const cdLabel = d.chucDanh || config.chucDanh || 'Trưởng ca';
-    let noteContent = wpara(wrun('Tại ' + cdLabel + ' :', { bold: true, size: 22 }), { spBefore: 40, spAfter: 10 });
-    swapNotes.forEach(line => {
-      noteContent += wpara(wrun('- ' + line, { size: 22 }), { indent: { left: 360 }, spAfter: 10 });
+  const cdKeys = Object.keys(notesByCD);
+  if (cdKeys.length > 0) {
+    let noteContent = '';
+    cdKeys.forEach((cd, idx) => {
+      noteContent += wpara(wrun('Tại ' + cd + ' :', { bold: true, size: 22 }), { spBefore: idx === 0 ? 40 : 80, spAfter: 10 });
+      notesByCD[cd].forEach(line => {
+        noteContent += wpara(wrun('- ' + line, { size: 22 }), { indent: { left: 360 }, spAfter: 10 });
+      });
     });
     tableRows.push(wtr([
       wtc({ w: CW, gridSpan: nCols + 2, borders: false, content: noteContent })
@@ -247,7 +255,7 @@ export function buildDocXml(currentResult: any, config: any) {
   const mainTbl = wtable(tableRows, colW);
 
   const note = wpara(
-    wrun('Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều           chỉnh kịp thời./.',
+    wrun('Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều chỉnh kịp thời./.',
       { italic: true, size: 20 }),
     { spBefore: 120, spAfter: 60 }
   );
@@ -330,7 +338,9 @@ export async function exportWord(currentResult: any, config: any) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  const fname = 'Lich_truc_thay_' + currentResult.ten.replace(/\s+/g, '_') + '.docx';
+  const fname = currentResult.allResults && currentResult.allResults.length > 1
+    ? 'Lich_truc_thay_' + currentResult.allResults.map((r: any) => r.ten.split(' ').pop()).join('_') + '.docx'
+    : 'Lich_truc_thay_' + currentResult.ten.replace(/\s+/g, '_') + '.docx';
   a.download = fname;
   document.body.appendChild(a);
   a.click();

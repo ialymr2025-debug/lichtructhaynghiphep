@@ -160,28 +160,37 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
           kShiftCounts[absentKip]++;
         }
         if (s === 'N') reliefTracker[absentKip].N++;
-      } else {
-        // Relief logic: Only for 1-person leave
-        // Requirement: Only start relief after at least 3 working shifts (N, C, K) have been missed
-        if (activeLeaves.length === 1 && reliefTracker[absentKip].workingShiftsMissed >= 3 && sh[helperKip] === 'O' && !absentSet[helperKip]) {
-          const cycleIdx = reliefTracker[absentKip].reliefsDone % 3;
-          let targetShift: 'N' | 'C' | 'K' = 'K';
-          
-          if (cycleIdx === 0) {
-            targetShift = 'K';
-          } else if (cycleIdx === 1) {
-            // Compare N and C missed counts to decide next relief
-            if (reliefTracker[absentKip].N >= reliefTracker[absentKip].C) {
-              targetShift = 'N';
-            } else {
-              targetShift = 'C';
-            }
-            reliefTracker[absentKip].lastCycleShift = targetShift;
-          } else {
-            // cycleIdx === 2: Pick the remaining shift from N and C
-            targetShift = (reliefTracker[absentKip].lastCycleShift === 'N') ? 'C' : 'N';
-          }
+      }
 
+      // Relief logic: Only for 1-person leave
+      // Requirement: Only start relief after at least 3 working shifts (N, C, K) have been missed
+      // And the helper kip must be naturally Off today AND it must be an "O tròn" (Off after K)
+      const isOTron = prevShift[helperKip] === 'K' && sh[helperKip] === 'O';
+      
+      if (leaves.length === 1 && reliefTracker[absentKip].workingShiftsMissed >= 3 && isOTron && !absentSet[helperKip]) {
+        const requiredShiftsToday = new Set<string>();
+        for (let k = 1; k <= 5; k++) {
+          const st = xacDinhCa(ngay, k);
+          if (st !== 'O') requiredShiftsToday.add(st);
+        }
+
+        const cycleIdx = reliefTracker[absentKip].reliefsDone % 3;
+        let targetShift: 'N' | 'C' | 'K' = 'K';
+        
+        if (cycleIdx === 0) {
+          targetShift = 'K';
+        } else {
+          // Second and third reliefs: Pick N or C based on missed counts to balance workload
+          if (reliefTracker[absentKip].N > reliefTracker[absentKip].C) {
+            targetShift = (cycleIdx === 1) ? 'N' : 'C';
+          } else {
+            targetShift = (cycleIdx === 1) ? 'C' : 'N';
+          }
+        }
+
+        // CRITICAL: Only relieve if the target shift actually exists today
+        // AND it's not the shift the absent person is currently missing (unless they are Off)
+        if (requiredShiftsToday.has(targetShift) && targetShift !== s) {
           const kipToRelieve = [1, 2, 3, 4, 5].find(k => sh[k] === targetShift);
           if (kipToRelieve && !forcedAssignments[helperKip] && !forcedAssignments[kipToRelieve]) {
             forcedAssignments[helperKip] = targetShift;
@@ -204,9 +213,15 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
           if (!fullConfig[k]) fullConfig[k] = 'O';
         });
 
+        const requiredShifts = new Set<string>();
+        for (let k = 1; k <= 5; k++) {
+          const s = xacDinhCa(ngay, k);
+          if (s !== 'O') requiredShifts.add(s);
+        }
+
         let score = 0;
         const assignedShifts = new Set(Object.values(fullConfig));
-        ['N', 'C', 'K'].forEach(s => {
+        requiredShifts.forEach(s => {
           if (!assignedShifts.has(s)) score += 1000000; 
         });
 
@@ -309,14 +324,20 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
 
     // Check for missing shifts and report them
     const finalAssignedShifts = new Set(Object.values(bestConfig));
-    ['N', 'C', 'K'].forEach(s => {
+    const requiredShiftsToday = new Set<string>();
+    for (let k = 1; k <= 5; k++) {
+      const s = xacDinhCa(ngay, k);
+      if (s !== 'O') requiredShiftsToday.add(s);
+    }
+
+    requiredShiftsToday.forEach(s => {
       if (!finalAssignedShifts.has(s)) {
         const absentKip = origAbsentKipMap[s];
         const tenAbsent = timThay(absentKip, chucDanh, staffData);
         extraRows.push({
           ngay, ca: s, kipThay: 0,
           nguoiThay: '⚠️ CHƯA CÓ NGƯỜI TRỰC',
-          absentKip: absentKip, absentTen: tenAbsent,
+          absentKip: absentKip, absentTen: tenAbsent, chucDanh,
           isConflict: true, conflictNote: `Không tìm được người thay cho Ca ${s} của ${tenAbsent}`,
           isCKChain: false, isSwap: false, isOverlapDay: activeLeaves.length >= 2
         });
@@ -341,30 +362,34 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
           const isCK = prevShift[k] === 'C' && assignedShift === 'O' && sh[k] === 'K';
           const ckNote = isCK ? `⥵ C→K: ${timThay(k, chucDanh, staffData)} vướng ca C hôm trước, không thể trực ca K hôm nay` : '';
 
+          const reliefInfo = forcedReliefs.find(r => r.helperKip === k && r.shift === assignedShift);
+          const actualAbsentKip = reliefInfo ? origAbsentKipMap[assignedShift] : absentKip;
+          const actualAbsentTen = timThay(actualAbsentKip, chucDanh, staffData);
+
           if (absentSet[absentKip]) {
             const idx = kipToIdx[absentKip];
             if (idx !== undefined) {
-              const reliefInfo = forcedReliefs.find(r => r.helperKip === k && r.shift === assignedShift && r.absentKip === absentKip);
-
               results[idx].ketQua.push({
                 ngay, ca: assignedShift, kipThay: k,
                 nguoiThay: timThay(k, chucDanh, staffData),
                 isConflict: isConf,
-                conflictNote: reliefInfo ? `⇄ Đổi ca: Kíp ${k} trực thay ca ${assignedShift} cho Kíp ${absentKip} (Kíp hỗ trợ)` : (ckNote || noteConf),
+                conflictNote: reliefInfo ? `⇄ Đổi ca: Kíp ${k} trực thay ca ${assignedShift} cho ${actualAbsentTen} (Kíp hỗ trợ)` : (ckNote || noteConf),
                 isOverlapDay: activeLeaves.length >= 2,
-                isCKSwap: isCK
+                isCKSwap: isCK,
+                swapAbsentTen: reliefInfo ? actualAbsentTen : undefined
               });
               coverCount[k]++;
               accumulatedCoverCount[k]++;
             }
           } else if (isReplacement) {
+            const isManualSwap = !absentSet[actualAbsentKip];
             extraRows.push({
               ngay, ca: assignedShift, kipThay: k,
               nguoiThay: timThay(k, chucDanh, staffData),
-              absentKip: absentKip, absentTen: timThay(absentKip, chucDanh, staffData),
+              absentKip: actualAbsentKip, absentTen: actualAbsentTen, chucDanh,
               isConflict: isConf, 
-              conflictNote: ckNote || (isConf ? noteConf : `△ Điều chỉnh hệ thống: ${timThay(k, chucDanh, staffData)} thay cho ${timThay(absentKip, chucDanh, staffData)}`),
-              isCKChain: isCK, isSwap: true, isOverlapDay: activeLeaves.length >= 2
+              conflictNote: ckNote || (isConf ? noteConf : (isManualSwap || reliefInfo ? `⇄ Đổi ca: Kíp ${k} trực thay ca ${assignedShift} cho ${actualAbsentTen}` : `△ Điều chỉnh hệ thống: ${timThay(k, chucDanh, staffData)} thay cho ${actualAbsentTen}`)),
+              isCKChain: isCK, isSwap: isManualSwap || !!reliefInfo, isOverlapDay: activeLeaves.length >= 2
             });
             coverCount[k]++;
           }

@@ -4,7 +4,7 @@ export const DEFAULT_STAFF = [
   ["Trực chính điện",  "Phan Văn Hùng",      "Ngô Xuân Đoàn",      "Nguyễn Yên Nam",    "Nguyễn Trung Chính", "Lê Hướng"],
   ["Trực phụ điện",    "Hoàng Ngọc Ân",      "Nguyễn Ngọc Hùng",   "Nguyễn Phỉ Được",   "Kiều Cao Khởi",       "Trương Đình Thắng"],
   ["Trực chính máy",   "Nguyễn Tấn Phước",   "Lê Văn Dân",         "Phạm Văn Toàn",     "Phan Ngọc Hùng",     "Nguyễn Khắc Học"],
-  ["Trực phụ máy",     "Phạm Văn Von",       "Thái Trần Hoàng Vũ", "Lê Văn Tích",       "",                    "Puih Thăn"],
+  ["Trực phụ máy",     "Phạm Văn Von",       "Thái Trần Hoàng Vũ", "Lê Văn Tích",       "","Puih Thăn"],
   ["TC TBA 500 kV",    "Võ Quang Minh",      "Trần Hữu Thuận",     "Lê Thành Cao",      "Bùi Ngọc Thuận",     "Phạm Hồng Thắng"],
   ["Trực OPY",         "Ngô Xuân Vỹ",        "Trần Văn Thiên",     "Hoàng Văn Thăng",   "Trần Tiễn Quân",     "A Ran"],
   ["Trực CNN",         "Phạm Văn Mạnh",      "Hà Văn Chăn",        "Lê Thế Đàm",        "Cù Minh Trung",      "Nguyễn Vinh Quang"],

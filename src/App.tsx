@@ -402,7 +402,6 @@ export default function App() {
                 <button className="btn-ex btn-word" onClick={handleExportWord} disabled={isProcessing}>
                   {isProcessing ? <span className="spin spinw mr-2"></span> : '📝'} Xuất Word
                 </button>
-                <button className="btn-ex btn-csv" onClick={handleExportCSV}>📄 Xuất CSV</button>
               </div>
             </div>
 

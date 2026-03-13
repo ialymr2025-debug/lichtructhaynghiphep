@@ -271,9 +271,9 @@ export default function App() {
   return (
     <div className="wrap">
       <header>
-        <div className="tag">Thủy Điện Ialy &middot; Phân Xưởng Vận Hành</div>
+        <div className="tag">Thủy Điện Ialy &middot; Phân Xưởng Vận Hành Ialy</div>
         <h1>Lịch Trực Thay Ca Nghỉ Phép</h1>
-        <p className="sub">Hệ thống phân công tự động theo quy luật kíp vận hành</p>
+        <p className="sub">Hệ thống tạo lịch trực thay ca vận hành nghỉ phép</p>
       </header>
 
       <div className="card">
@@ -354,7 +354,7 @@ export default function App() {
 
       <div className="card">
         <div className="ctitle">
-          Danh sách nhân sự 
+          Nhân sự các kíp 
           <button className="staff-toggle" onClick={() => setShowStaff(!showStaff)}>
             {showStaff ? 'Thu gọn ▲' : 'Chỉnh sửa ▼'}
           </button>

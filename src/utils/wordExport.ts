@@ -255,7 +255,7 @@ export function buildDocXml(currentResult: any, config: any) {
   const mainTbl = wtable(tableRows, colW);
 
   const note = wpara(
-    wrun('Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều chỉnh kịp thời./.',
+    wrun('   Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều        chỉnh kịp thời./.',
       { italic: true, size: 20 }),
     { spBefore: 120, spAfter: 60 }
   );

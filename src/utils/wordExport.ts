@@ -126,7 +126,7 @@ export function buildDocXml(currentResult: any, config: any) {
     wpara(wrun('CÔNG TY THỦY ĐIỆN IALY', { size: 22 }), { align: 'center', spAfter: 40 })
     + wpara(wrun('PHÂN XƯỞNG VẬN HÀNH IALY', { bold: true, size: 22, underline: true }), { align: 'center' }),
     wpara(wrun('CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM', { bold: true, size: 20 }), { align: 'center', spAfter: 40 })
-    + wpara(wrun('Độc lập - Tự do - Hạnh phúc', { italic: true, size: 22, underline: true }), { align: 'center' }),
+    + wpara(wrun('Độc lập - Tự do - Hạnh phúc', { bold: true, size: 22, underline: true }), { align: 'center' }),
     CW
   );
   const soNgayTbl = twoCol(

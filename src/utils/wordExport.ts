@@ -271,7 +271,7 @@ export function buildDocXml(currentResult: any, config: any) {
       wtc({
         w: CW - HW, borders: false, content:
           wpara(wrun('QUẢN ĐỐC', { bold: true, size: 22 }), { align: 'center', spBefore: 80 })
-          + emptyP(500, 0) + emptyP(500, 0) + emptyP(500, 0)
+          + emptyP(500, 0) + emptyP(500, 0) 
           + wpara(wrun(nguoiKy, { bold: true, size: 22 }), { align: 'center' })
       })
     ])

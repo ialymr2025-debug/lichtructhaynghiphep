@@ -126,7 +126,7 @@ export function buildDocXml(currentResult: any, config: any) {
     wpara(wrun('CÔNG TY THỦY ĐIỆN IALY', { size: 22 }), { align: 'center', spAfter: 40 })
     + wpara(wrun('PHÂN XƯỞNG VẬN HÀNH IALY', { bold: true, size: 22, underline: true }), { align: 'center' }),
     wpara(wrun('CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM', { bold: true, size: 20 }), { align: 'center', spAfter: 40 })
-    + wpara(wrun('Độc lập - Tự do - Hạnh phúc', { bold: true, size: 22, underline: true }), { align: 'center' }),
+    + wpara(wrun('Độc lập - Tự do - Hạnh phúc', { italic: true, size: 22, underline: true }), { align: 'center' }),
     CW
   );
   const soNgayTbl = twoCol(
@@ -221,10 +221,11 @@ export function buildDocXml(currentResult: any, config: any) {
   allResults.forEach((res: any) => {
     const cd = res.chucDanh || d.chucDanh || 'Trưởng ca';
     res.ketQua.forEach((it: any) => {
-      if (it.conflictNote && (it.conflictNote.includes('Đổi ca') || it.conflictNote.includes('Hoán đổi'))) {
+      if (it.conflictNote && (it.conflictNote.includes('Đổi ca') || it.conflictNote.includes('Hoán đổi') || it.relievedTen)) {
         if (!notesByCD[cd]) notesByCD[cd] = [];
         const dateStr = it.ca + '/' + fmtVN(it.ngay).slice(0, 5);
-        notesByCD[cd].push(`${abbrev(it.nguoiThay)} trực thay ${abbrev(it.swapAbsentTen || res.ten)} ca ${dateStr}`);
+        const relieved = it.relievedTen || it.swapAbsentTen || res.ten;
+        notesByCD[cd].push(`${abbrev(it.nguoiThay)} trực thay ${abbrev(relieved)} ca ${dateStr}`);
       }
     });
   });
@@ -234,7 +235,8 @@ export function buildDocXml(currentResult: any, config: any) {
       const cd = ex.chucDanh || d.chucDanh || 'Trưởng ca';
       if (!notesByCD[cd]) notesByCD[cd] = [];
       const dateStr = ex.ca + '/' + fmtVN(ex.ngay).slice(0, 5);
-      notesByCD[cd].push(`${abbrev(ex.nguoiThay)} trực thay ${abbrev(ex.absentTen)} ca ${dateStr}`);
+      const relieved = ex.relievedTen || ex.absentTen;
+      notesByCD[cd].push(`${abbrev(ex.nguoiThay)} trực thay ${abbrev(relieved)} ca ${dateStr}`);
     }
   });
 
@@ -255,7 +257,7 @@ export function buildDocXml(currentResult: any, config: any) {
   const mainTbl = wtable(tableRows, colW);
 
   const note = wpara(
-    wrun('   Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều        chỉnh kịp thời./.',
+    wrun('Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều chỉnh kịp thời./.',
       { italic: true, size: 20 }),
     { spBefore: 120, spAfter: 60 }
   );
@@ -271,7 +273,7 @@ export function buildDocXml(currentResult: any, config: any) {
       wtc({
         w: CW - HW, borders: false, content:
           wpara(wrun('QUẢN ĐỐC', { bold: true, size: 22 }), { align: 'center', spBefore: 80 })
-          + emptyP(500, 0) + emptyP(500, 0) 
+          + emptyP(500, 0) + emptyP(500, 0) + emptyP(500, 0)
           + wpara(wrun(nguoiKy, { bold: true, size: 22 }), { align: 'center' })
       })
     ])

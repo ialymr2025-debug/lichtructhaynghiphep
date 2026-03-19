@@ -273,9 +273,9 @@ export default function App() {
   return (
     <div className="wrap">
       <header>
-        <div className="tag">Thủy Điện Ialy &middot; Phân Xưởng Vận Hành</div>
+        <div className="tag"> Công ty Thủy Điện Ialy &middot; Phân Xưởng Vận Hành Ialy</div>
         <h1>Lịch Trực Thay Ca Nghỉ Phép</h1>
-        <p className="sub">Hệ thống phân công tự động theo quy luật kíp vận hành</p>
+        <p className="sub">Hệ thống phân công tự động lịch trực ca vận hành</p>
       </header>
 
       <div className="card">
@@ -356,7 +356,7 @@ export default function App() {
 
       <div className="card">
         <div className="ctitle">
-          Danh sách nhân sự 
+          Nhân sự của kíp 
           <button className="staff-toggle" onClick={() => setShowStaff(!showStaff)}>
             {showStaff ? 'Thu gọn ▲' : 'Chỉnh sửa ▼'}
           </button>
@@ -558,11 +558,9 @@ export default function App() {
             </div>
 
             <div className="legend">
-              <div className="legend-item"><span className="badge bN">N</span>Ca Ngày (6:00–14:00)</div>
-              <div className="legend-item"><span className="badge bC">C</span>Ca Chiều (14:00–22:00)</div>
-              <div className="legend-item"><span className="badge bK">K</span>Ca Đêm (22:00–6:00)</div>
-              <div className="legend-item"><span className="conflict-badge bg-[#22c55e1a] text-[#22c55e] border-[#22c55e4d]">⇄ O tròn</span>Ca nghỉ (O) ngay sau ca đêm (K) - Ưu tiên hỗ trợ ca N/C</div>
-              <div className="legend-item"><span className="conflict-badge bg-[#eab3081a] text-[#eab308] border-[#eab3084d]">⚡ Pre-Relief</span>Hỗ trợ kíp thay chính nghỉ ngơi trước ca trực quan trọng</div>
+              <div className="legend-item"><span className="badge bN">N</span>Ca Ngày (8:00–16:00)</div>
+              <div className="legend-item"><span className="badge bC">C</span>Ca Chiều (16:00–22:20)</div>
+              <div className="legend-item"><span className="badge bK">K</span>Ca Đêm (22:20–8:00)</div>
             </div>
           </div>
         </div>

@@ -223,6 +223,7 @@ export default function App() {
           absentTen: res.ten,
           chucDanh: res.chucDanh,
           kipThay: it.kipThay, nguoiThay: it.nguoiThay,
+          relievedKip: it.relievedKip, relievedTen: it.relievedTen,
           isConflict: it.isConflict, conflictNote: it.conflictNote || '',
           isOverlapDay: it.isOverlapDay,
           isCKChain: false,
@@ -237,6 +238,7 @@ export default function App() {
         absentKip: it.absentKip, absentTen: it.absentTen,
         chucDanh: it.chucDanh,
         kipThay: it.kipThay, nguoiThay: it.nguoiThay,
+        relievedKip: it.relievedKip, relievedTen: it.relievedTen,
         isConflict: it.isConflict, conflictNote: it.conflictNote || '',
         isOverlapDay: it.isOverlapDay, 
         isCKChain: it.isCKChain,
@@ -271,9 +273,9 @@ export default function App() {
   return (
     <div className="wrap">
       <header>
-        <div className="tag">Thủy Điện Ialy &middot; Phân Xưởng Vận Hành Ialy</div>
+        <div className="tag">Thủy Điện Ialy &middot; Phân Xưởng Vận Hành</div>
         <h1>Lịch Trực Thay Ca Nghỉ Phép</h1>
-        <p className="sub">Hệ thống tạo lịch trực thay ca vận hành nghỉ phép</p>
+        <p className="sub">Hệ thống phân công tự động theo quy luật kíp vận hành</p>
       </header>
 
       <div className="card">
@@ -354,7 +356,7 @@ export default function App() {
 
       <div className="card">
         <div className="ctitle">
-          Nhân sự các kíp 
+          Danh sách nhân sự 
           <button className="staff-toggle" onClick={() => setShowStaff(!showStaff)}>
             {showStaff ? 'Thu gọn ▲' : 'Chỉnh sửa ▼'}
           </button>
@@ -402,6 +404,7 @@ export default function App() {
                 <button className="btn-ex btn-word" onClick={handleExportWord} disabled={isProcessing}>
                   {isProcessing ? <span className="spin spinw mr-2"></span> : '📝'} Xuất Word
                 </button>
+                <button className="btn-ex btn-csv" onClick={handleExportCSV}>📄 Xuất CSV</button>
               </div>
             </div>
 
@@ -501,9 +504,9 @@ export default function App() {
                               <>
                                 <span className="text-[#22c55e] text-[11px]">đổi ca</span>
                                 <br />
-                                {row.absentTen}
+                                {row.relievedTen || row.absentTen}
                                 <br />
-                                <span className="text-[10px]">Kíp {row.absentKip}</span>
+                                <span className="text-[10px]">Kíp {row.relievedKip || row.absentKip}</span>
                               </>
                             ) : row.isCKChain ? (
                               <>
@@ -555,9 +558,11 @@ export default function App() {
             </div>
 
             <div className="legend">
-              <div className="legend-item"><span className="badge bN">N</span>Ca Ngày (08:00–16:00)</div>
-              <div className="legend-item"><span className="badge bC">C</span>Ca Chiều (16:00–22:20)</div>
-              <div className="legend-item"><span className="badge bK">K</span>Ca Đêm (22:20–08:00)</div>
+              <div className="legend-item"><span className="badge bN">N</span>Ca Ngày (6:00–14:00)</div>
+              <div className="legend-item"><span className="badge bC">C</span>Ca Chiều (14:00–22:00)</div>
+              <div className="legend-item"><span className="badge bK">K</span>Ca Đêm (22:00–6:00)</div>
+              <div className="legend-item"><span className="conflict-badge bg-[#22c55e1a] text-[#22c55e] border-[#22c55e4d]">⇄ O tròn</span>Ca nghỉ (O) ngay sau ca đêm (K) - Ưu tiên hỗ trợ ca N/C</div>
+              <div className="legend-item"><span className="conflict-badge bg-[#eab3081a] text-[#eab308] border-[#eab3084d]">⚡ Pre-Relief</span>Hỗ trợ kíp thay chính nghỉ ngơi trước ca trực quan trọng</div>
             </div>
           </div>
         </div>

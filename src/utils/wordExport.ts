@@ -181,7 +181,7 @@ export function buildDocXml(currentResult: any, config: any) {
       if (isFirst) {
         caRow.push(wtc({
           w: c0, vMerge: 'restart',
-          content: wpara(wrun(res.ten, { size: 22 }), { align: 'center', spAfter: 20 })
+          content: wpara(wrun(res.ten, { size: 24 }), { align: 'center', spAfter: 20 })
             + wpara(wrun(nghiStr, { italic: true, size: 20 }), { align: 'center' })
         }));
         caRow.push(wtc({
@@ -196,7 +196,7 @@ export function buildDocXml(currentResult: any, config: any) {
         const it = grp[i];
         caRow.push(wtc({
           w: colW[i + 2], shading: it ? GRAY : '',
-          content: wpara(wrun(it ? it.ca + '-' + fmtVN(it.ngay).slice(0, 5) : '', { bold: true, size: 22 }), { align: 'center' })
+          content: wpara(wrun(it ? it.ca + '-' + fmtVN(it.ngay).slice(0, 5) : '', { bold: true, size: 24 }), { align: 'center' })
         }));
       }
       tableRows.push(wtr(caRow));
@@ -209,7 +209,7 @@ export function buildDocXml(currentResult: any, config: any) {
         const it = grp[i];
         tenRow.push(wtc({
           w: colW[i + 2],
-          content: it ? wpara(wrun(abbrev(it.nguoiThay), { size: 22 }), { align: 'center' }) : emptyP()
+          content: it ? wpara(wrun(abbrev(it.nguoiThay), { size: 24 }), { align: 'center' }) : emptyP()
         }));
       }
       tableRows.push(wtr(tenRow));
@@ -244,7 +244,7 @@ export function buildDocXml(currentResult: any, config: any) {
   if (cdKeys.length > 0) {
     let noteContent = '';
     cdKeys.forEach((cd, idx) => {
-      noteContent += wpara(wrun('Tại ' + cd + ' :', { bold: true, size: 22 }), { spBefore: idx === 0 ? 40 : 80, spAfter: 10 });
+      noteContent += wpara(wrun('Tại ' + cd + ' :', { bold: true, size: 24 }), { spBefore: idx === 0 ? 40 : 80, spAfter: 10 });
       notesByCD[cd].forEach(line => {
         noteContent += wpara(wrun('- ' + line, { size: 22 }), { indent: { left: 360 }, spAfter: 10 });
       });
@@ -258,7 +258,7 @@ export function buildDocXml(currentResult: any, config: any) {
 
   const note = wpara(
     wrun('   Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều        chỉnh kịp thời./.',
-      { italic: true, size: 20 }),
+      { italic: true, size: 24 }),
     { spBefore: 120, spAfter: 60 }
   );
 

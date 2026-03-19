@@ -234,7 +234,7 @@ export function buildDocXml(currentResult: any, config: any) {
     if (ex.isSwap) {
       const cd = ex.chucDanh || d.chucDanh || 'Trưởng ca';
       if (!notesByCD[cd]) notesByCD[cd] = [];
-      const dateStr = ex.ca + '/' + fmtVN(ex.ngay).slice(0, 5);
+      const dateStr = ex.ca + '-' + fmtVN(ex.ngay).slice(0, 5);
       const relieved = ex.relievedTen || ex.absentTen;
       notesByCD[cd].push(`${abbrev(ex.nguoiThay)} trực thay ${abbrev(relieved)} ca ${dateStr}`);
     }
@@ -257,7 +257,7 @@ export function buildDocXml(currentResult: any, config: any) {
   const mainTbl = wtable(tableRows, colW);
 
   const note = wpara(
-    wrun('Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều chỉnh kịp thời./.',
+    wrun('   Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều chỉnh        kịp thời./.',
       { italic: true, size: 20 }),
     { spBefore: 120, spAfter: 60 }
   );

@@ -126,12 +126,12 @@ export function buildDocXml(currentResult: any, config: any) {
     wpara(wrun('CÔNG TY THỦY ĐIỆN IALY', { size: 22 }), { align: 'center', spAfter: 40 })
     + wpara(wrun('PHÂN XƯỞNG VẬN HÀNH IALY', { bold: true, size: 22, underline: true }), { align: 'center' }),
     wpara(wrun('CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM', { bold: true, size: 20 }), { align: 'center', spAfter: 40 })
-    + wpara(wrun('Độc lập - Tự do - Hạnh phúc', { bold: true, size: 22, underline: true }), { align: 'center' }),
+    + wpara(wrun('Độc lập - Tự do - Hạnh phúc', { bold: true, size: 24, underline: true }), { align: 'center' }),
     CW
   );
   const soNgayTbl = twoCol(
-    wpara(wrun('Số: ' + (soVanBan || '      ') + '/VHIALY', { size: 22 }), { align: 'center', spBefore: 40, spAfter: 40 }),
-    wpara(wrun(buildDateStr(ngayKyVal), { italic: true, size: 22 }), { align: 'center' }),
+    wpara(wrun('Số: ' + (soVanBan || '      ') + '/VHIALY', { size: 24 }), { align: 'center', spBefore: 40, spAfter: 40 }),
+    wpara(wrun(buildDateStr(ngayKyVal), { italic: true, size: 24 }), { align: 'center' }),
     CW
   );
   const title = wpara(wrun('LỊCH TRỰC THAY CA VẬN HÀNH', { bold: true, size: 28 }),

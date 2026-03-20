@@ -213,29 +213,35 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
           }
         });
 
+        const kipN = RULES[absentKip].N.k;
+        const kipC = RULES[absentKip].C.k;
+        const kipK = RULES[absentKip].K.k;
+        
+        const countN = currentLeaveCoverStats[kipN].N;
+        const countC = currentLeaveCoverStats[kipC].C;
+        const countK = currentLeaveCoverStats[kipK].K;
+
         if (cycleIdx === 0) {
           // Lần 1: Kích hoạt khi kíp hỗ trợ đạt mốc 3 ca trực thay cùng loại (3N, 3C hoặc 3K) tính trong suốt kỳ nghỉ
-          const kipN = RULES[absentKip].N.k;
-          const kipC = RULES[absentKip].C.k;
-          const kipK = RULES[absentKip].K.k;
-          
-          const countN = currentLeaveCoverStats[kipN].N;
-          const countC = currentLeaveCoverStats[kipC].C;
-          const countK = currentLeaveCoverStats[kipK].K;
-
           // Logic ưu tiên: 
           // 1. Nếu bất kỳ loại ca nào (N, C, K) đạt mốc >=4 ca trực thay: Ưu tiên đổi ca K lần đầu.
           // 2. Nếu không đạt mốc 4, nhưng đạt mốc 3:
+          //    - Nếu có cả 3 ca N, 3 ca C và 3 ca K: Ưu tiên đổi ca K.
           //    - Nếu có cả 3 ca N và 3 ca C cùng lúc: Ưu tiên đổi ca C.
           //    - Nếu đạt mốc 3 ca C: Đổi ca C.
           //    - Nếu đạt mốc 3 ca N: Đổi ca N.
           //    - Nếu đạt mốc 3 ca K: Đổi ca K.
           // 3. Nếu không đạt mốc 4 và 3, nhưng đạt mốc 2:
+          //    - Nếu có cả 2 ca K, 2 ca N và 2 ca C cùng lúc: Ưu tiên đổi ca K.
           //    - Nếu có cả 2 ca N và 2 ca C cùng lúc: Ưu tiên đổi ca C.
+          //    - Nếu có cả 2 ca K và 2 ca N cùng lúc: Ưu tiên đổi ca K.
+          //    - Nếu có cả 2 ca K và 2 ca C cùng lúc: Ưu tiên đổi ca K.
           //    - Nếu đạt mốc 2 ca C: Đổi ca C.
           //    - Nếu đạt mốc 2 ca N: Đổi ca N.
           //    - Nếu đạt mốc 2 ca K: Đổi ca K.
           if (countC >= 4 || countN >= 4 || countK >= 4) {
+            targetRelief = 'K';
+          } else if (countC >= 3 && countN >= 3 && countK >= 3) {
             targetRelief = 'K';
           } else if (countC >= 3 && countN >= 3) {
             targetRelief = 'C';
@@ -245,8 +251,14 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
             targetRelief = 'N';
           } else if (countK >= 3) {
             targetRelief = 'K';
+          } else if (countK >= 2 && countN >= 2 && countC >= 2) {
+            targetRelief = 'K';
           } else if (countC >= 2 && countN >= 2) {
             targetRelief = 'C';
+          } else if (countK >= 2 && countN >= 2) {
+            targetRelief = 'K';
+          } else if (countK >= 2 && countC >= 2) {
+            targetRelief = 'K';
           } else if (countC >= 2) {
             targetRelief = 'C';
           } else if (countN >= 2) {
@@ -266,8 +278,9 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
           }
         } else if (cycleIdx === 1) {
           // Lần 2, 5, 8...: 
-          // Nếu lần 1 là K: Đổi ca có số ca nghỉ nhiều nhất giữa N và C
+          // Nếu Lần 1 đã là K (do mốc >=4 hoặc 3N-3C-3K)
           if (reliefTracker[absentKip].firstSwapType === 'K') {
+            // Xoay vòng N/C
             if (reliefTracker[absentKip].N > reliefTracker[absentKip].C) {
               missedShiftToCompensate = 'N';
               reliefShift = 'C';
@@ -275,9 +288,13 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
               missedShiftToCompensate = 'C';
               reliefShift = 'N';
             }
+          } 
+          // Nếu Lần 1 KHÔNG phải là K, nhưng đạt mốc 3N-3C hoặc 3C-3K -> Lần 2 là K
+          else if ((countN >= 3 && countC >= 3) || (countC >= 3 && countK >= 3)) {
+            missedShiftToCompensate = 'K';
+            reliefShift = 'K';
           } else {
-            // Nếu lần 1 là N hoặc C: Đổi ca còn lại trong cặp N-C hoặc ca K
-            // Tạm thời ưu tiên hoàn thành cặp N-C
+            // Nếu lần 1 là N hoặc C: Đổi ca còn lại trong cặp N-C
             if (reliefTracker[absentKip].firstSwapType === 'N') {
               missedShiftToCompensate = 'C';
               reliefShift = 'N';
@@ -308,8 +325,19 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
             }
           } else {
             // Nếu lần 1 là N hoặc C, lần 2 là C hoặc N, thì lần 3 là K
-            missedShiftToCompensate = 'K';
-            reliefShift = 'K';
+            // Nếu lần 2 đã bị ghi đè thành K (do mốc 3N-3C hoặc 3C-3K), thì lần 3 là ca còn lại của cặp N-C
+            if (reliefTracker[absentKip].lastCycleShift === 'K') {
+              if (reliefTracker[absentKip].firstSwapType === 'N') {
+                missedShiftToCompensate = 'C';
+                reliefShift = 'N';
+              } else {
+                missedShiftToCompensate = 'N';
+                reliefShift = 'C';
+              }
+            } else {
+              missedShiftToCompensate = 'K';
+              reliefShift = 'K';
+            }
           }
         }
 
@@ -320,39 +348,34 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
         // Điều kiện: Kíp được thay (targetKip) phải đang có ca trực tự nhiên trùng với reliefShift
         if (targetKip && reliefShift && sh[targetKip] === reliefShift) {
           if (!absentSet[targetKip] && !forcedAssignments[helperKip] && !forcedAssignments[targetKip]) {
-            const countToRelieve = coverCount[targetKip] || 0;
-            const reliefsReceived = reliefTracker[absentKip].reliefsReceivedByKip[targetKip];
-            let requiredCovers = 0;
-            let requiredMissed = 0;
-            if (reliefsReceived === 0) {
-              requiredCovers = 3;
-              requiredMissed = 3;
-            } else if (reliefsReceived === 1) {
-              requiredCovers = 4;
-              requiredMissed = 6;
-            } else {
-              // Các lần tiếp theo: +1 ca tích lũy và +3 ca nghỉ cho mỗi lần đổi
-              requiredCovers = 4 + (reliefsReceived - 1);
-              requiredMissed = 6 + (reliefsReceived - 1) * 3;
-            }
-
-            // Điều kiện tích lũy:
-            // Lần 1: Có ít nhất 3 ca trực thay CÙNG LOẠI trong suốt kỳ nghỉ, sau khi nghỉ được 3 ca
-            // Lần 2: Có ít nhất 4 ca trực thay trong suốt kỳ nghỉ, sau khi nghỉ được 6 ca
+            // Điều kiện tích lũy theo yêu cầu người dùng:
+            // Lần 1: Covered >= 2, Missed >= 2
+            // Lần 2: Covered >= 3, Missed >= 5
+            // Lần 3: Covered >= 4, Missed >= 7
+            // Lần 4: Covered >= 5, Missed >= 9
+            // Lần 5: Covered >= 6, Missed >= 11
+            // Lần 6: Covered >= 7, Missed >= 13
             let canRelieve = false;
-            
-            // Kiểm tra điều kiện kích hoạt lần 1 dựa trên loại ca cụ thể
-            if (cycleIdx === 0 && targetRelief) {
-              const specificCount = currentLeaveCoverStats[targetKip][targetRelief];
-              // Chấp nhận mốc >= 2 cho lần 1 (bao gồm cả trường hợp mốc 4, 3)
-              if (specificCount >= 2 && reliefTracker[absentKip].workingShiftsMissed >= 2) {
-                canRelieve = true;
-              }
+            const totalReliefs = reliefTracker[absentKip].reliefsDone;
+            const totalMissed = reliefTracker[absentKip].workingShiftsMissed;
+            const activeShiftType = (cycleIdx === 0) ? targetRelief : missedShiftToCompensate;
+            const currentShiftCount = activeShiftType ? currentLeaveCoverStats[targetKip][activeShiftType] : 0;
+
+            if (totalReliefs === 0) { // Lần 1
+              if (currentShiftCount >= 2 && totalMissed >= 2) canRelieve = true;
+            } else if (totalReliefs === 1) { // Lần 2
+              if (currentShiftCount >= 3 && totalMissed >= 5) canRelieve = true;
+            } else if (totalReliefs === 2) { // Lần 3
+              if (currentShiftCount >= 4 && totalMissed >= 7) canRelieve = true;
+            } else if (totalReliefs === 3) { // Lần 4
+              if (currentShiftCount >= 5 && totalMissed >= 9) canRelieve = true;
+            } else if (totalReliefs === 4) { // Lần 5
+              if (currentShiftCount >= 6 && totalMissed >= 11) canRelieve = true;
+            } else if (totalReliefs === 5) { // Lần 6
+              if (currentShiftCount >= 7 && totalMissed >= 13) canRelieve = true;
             } else {
-              // Các lần sau hoặc logic mặc định
-              if (kipCoverStats[targetKip].total >= requiredCovers && reliefTracker[absentKip].workingShiftsMissed >= requiredMissed) {
-                canRelieve = true;
-              }
+              // Từ lần 7 trở đi: Tiếp tục tăng dần số ca tích lũy và số ca nghỉ yêu cầu
+              if (currentShiftCount >= (totalReliefs + 2) && totalMissed >= (totalReliefs * 2 + 3)) canRelieve = true;
             }
 
               if (canRelieve) {

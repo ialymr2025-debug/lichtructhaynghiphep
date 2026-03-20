@@ -232,6 +232,11 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
           //    - Nếu đạt mốc 3 ca C: Đổi ca C.
           //    - Nếu đạt mốc 3 ca N: Đổi ca N.
           //    - Nếu đạt mốc 3 ca K: Đổi ca K.
+          // 3. Nếu không đạt mốc 4 và 3, nhưng đạt mốc 2:
+          //    - Nếu có cả 2 ca N và 2 ca C cùng lúc: Ưu tiên đổi ca C.
+          //    - Nếu đạt mốc 2 ca C: Đổi ca C.
+          //    - Nếu đạt mốc 2 ca N: Đổi ca N.
+          //    - Nếu đạt mốc 2 ca K: Đổi ca K.
           if (countC >= 4 || countN >= 4 || countK >= 4) {
             targetRelief = 'K';
           } else if (countC >= 3 && countN >= 3) {
@@ -241,6 +246,14 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
           } else if (countN >= 3) {
             targetRelief = 'N';
           } else if (countK >= 3) {
+            targetRelief = 'K';
+          } else if (countC >= 2 && countN >= 2) {
+            targetRelief = 'C';
+          } else if (countC >= 2) {
+            targetRelief = 'C';
+          } else if (countN >= 2) {
+            targetRelief = 'N';
+          } else if (countK >= 2) {
             targetRelief = 'K';
           }
 
@@ -333,8 +346,8 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
             // Kiểm tra điều kiện kích hoạt lần 1 dựa trên loại ca cụ thể
             if (cycleIdx === 0 && targetRelief) {
               const specificCount = currentLeaveCoverStats[targetKip][targetRelief];
-              // Chấp nhận mốc >= 3 cho lần 1 (bao gồm cả trường hợp mốc 4 đã chọn ca K)
-              if (specificCount >= 3 && reliefTracker[absentKip].workingShiftsMissed >= 3) {
+              // Chấp nhận mốc >= 2 cho lần 1 (bao gồm cả trường hợp mốc 4, 3)
+              if (specificCount >= 2 && reliefTracker[absentKip].workingShiftsMissed >= 2) {
                 canRelieve = true;
               }
             } else {

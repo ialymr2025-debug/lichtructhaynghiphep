@@ -39,7 +39,6 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
   const coverCount: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   const accumulatedCoverCount: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   const reliefTracker: Record<number, { C: number, K: number, N: number, workingShiftsMissed: number, reliefsDone: number, reliefsReceivedByKip: Record<number, number>, lastCycleShift?: 'N' | 'C' | 'K', firstSwapType?: 'N' | 'C' | 'K' }> = {};
-  const kShiftCounts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   const dayShifts: Record<string, Record<number, string | undefined>> = {};
   const blockedNextK: Record<string, number[]> = {};
   const blockedNextKMeta: Record<string, number> = {};
@@ -174,7 +173,6 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
         if (s === 'C') reliefTracker[absentKip].C++;
         if (s === 'K') {
           reliefTracker[absentKip].K++;
-          kShiftCounts[absentKip]++;
         }
         if (s === 'N') reliefTracker[absentKip].N++;
       }
@@ -430,13 +428,6 @@ export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffD
               score += 1000;
               let ruleKip = (origKip && RULES[origKip] && RULES[origKip][s]) ? RULES[origKip][s].k : null;
               
-              // Apply K rotation rule
-              if (s === 'K' && origKip) {
-                const count = kShiftCounts[origKip];
-                if (count % 3 === 2) ruleKip = RULES[origKip].N.k;
-                else if (count % 3 === 0 && count > 0) ruleKip = RULES[origKip].C.k;
-              }
-
               if (ruleKip === k) score -= 500;
             } else {
               // Stealing a shift from someone who is NOT on leave - Massive penalty

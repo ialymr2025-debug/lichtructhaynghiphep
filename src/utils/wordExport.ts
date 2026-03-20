@@ -161,9 +161,9 @@ export function buildDocXml(currentResult: any, config: any) {
 
   const tableRows = [];
   tableRows.push(wtr([
-    wtc({ w: c0, shading: GRAY, content: wpara(wrun('Tên người cần được\ntrực thay', { bold: true, size: 22 }), { align: 'center' }) }),
-    wtc({ w: c1, shading: GRAY, content: wpara(wrun('Chức danh\nhiện tại', { bold: true, size: 22 }), { align: 'center' }) }),
-    wtc({ w: CW - c0 - c1, gridSpan: nCols, shading: GRAY, content: wpara(wrun('Tên người trực thay', { bold: true, size: 22 }), { align: 'center' }) })
+    wtc({ w: c0, shading: GRAY, content: wpara(wrun('Tên người cần được\ntrực thay', { bold: true, size: 24 }), { align: 'center' }) }),
+    wtc({ w: c1, shading: GRAY, content: wpara(wrun('Chức danh\nhiện tại', { bold: true, size: 24 }), { align: 'center' }) }),
+    wtc({ w: CW - c0 - c1, gridSpan: nCols, shading: GRAY, content: wpara(wrun('Tên người trực thay', { bold: true, size: 24 }), { align: 'center' }) })
   ]));
 
   allResults.forEach((res: any) => {
@@ -186,7 +186,7 @@ export function buildDocXml(currentResult: any, config: any) {
         }));
         caRow.push(wtc({
           w: c1, vMerge: 'restart',
-          content: wpara(wrun(chucDanh, { size: 22 }), { align: 'center' })
+          content: wpara(wrun(chucDanh, { size: 24 }), { align: 'center' })
         }));
       } else {
         caRow.push(wtc({ w: c0, vMerge: 'cont', content: emptyP() }));
@@ -246,7 +246,7 @@ export function buildDocXml(currentResult: any, config: any) {
     cdKeys.forEach((cd, idx) => {
       noteContent += wpara(wrun('Tại ' + cd + ' :', { bold: true, size: 24 }), { spBefore: idx === 0 ? 40 : 80, spAfter: 10 });
       notesByCD[cd].forEach(line => {
-        noteContent += wpara(wrun('- ' + line, { size: 22 }), { indent: { left: 360 }, spAfter: 10 });
+        noteContent += wpara(wrun('- ' + line, { size: 24 }), { indent: { left: 360 }, spAfter: 10 });
       });
     });
     tableRows.push(wtr([
@@ -266,15 +266,15 @@ export function buildDocXml(currentResult: any, config: any) {
     wtr([
       wtc({
         w: HW, borders: false, content:
-          wpara(wrun('Nơi nhận:', { bold: true, italic: true, size: 22 }), { spBefore: 80 })
+          wpara(wrun('Nơi nhận:', { bold: true, italic: true, size: 24 }), { spBefore: 80 })
           + wpara(wrun('- Các kíp (để t/hiện)', { italic: true, size: 22 }))
           + wpara(wrun('- Lưu: VHIALY', { italic: true, size: 22 }))
       }),
       wtc({
         w: CW - HW, borders: false, content:
-          wpara(wrun('QUẢN ĐỐC', { bold: true, size: 22 }), { align: 'center', spBefore: 80 })
+          wpara(wrun('QUẢN ĐỐC', { bold: true, size: 24 }), { align: 'center', spBefore: 80 })
           + emptyP(500, 0) + emptyP(500, 0) 
-          + wpara(wrun(nguoiKy, { bold: true, size: 22 }), { align: 'center' })
+          + wpara(wrun(nguoiKy, { bold: true, size: 24 }), { align: 'center' })
       })
     ])
   ], [HW, CW - HW]);

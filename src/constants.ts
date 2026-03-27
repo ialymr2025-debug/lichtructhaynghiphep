@@ -2,7 +2,7 @@ export const DEFAULT_STAFF = [
   ["Trưởng ca",        "Nguyễn Tiến Danh",  "Tạ Văn Hà",          "Nguyễn Văn Trường", "Bùi Chí Thanh",      "Hoàng Tấn Hùng"],
   ["Trực TTĐK",        "Vũ Đức Cường",       "Lê Trí Dũng",        "Nguyễn Văn Toàn",   "Mai Xuân Sơn",       "Trần Trung Liêm"],
   ["Trực chính điện",  "Phan Văn Hùng",      "Ngô Xuân Đoàn",      "Nguyễn Yên Nam",    "Nguyễn Trung Chính", "Lê Hướng"],
-  ["Trực phụ điện",    "Hoàng Ngọc Ân",      "Nguyễn Ngọc Hùng",   "Nguyễn Phỉ Được",   "",       "Trương Đình Thắng"],
+  ["Trực phụ điện",    "Hoàng Ngọc Ân",      "Nguyễn Ngọc Hùng",   "Nguyễn Phỉ Được",   "Kiều Cao Khởi1",       "Trương Đình Thắng"],
   ["Trực chính máy",   "Nguyễn Tấn Phước",   "Lê Văn Dân",         "Phạm Văn Toàn",     "Phan Ngọc Hùng",     "Nguyễn Khắc Học"],
   ["Trực phụ máy",     "Phạm Văn Von",       "Thái Trần Hoàng Vũ", "Lê Văn Tích",       "Kiều Cao Khởi",          "Puih Thăn"],
   ["TC TBA 500 kV",    "Võ Quang Minh",      "Trần Hữu Thuận",     "Lê Thành Cao",      "Bùi Ngọc Thuận",     "Phạm Hồng Thắng"],
@@ -11,7 +11,7 @@ export const DEFAULT_STAFF = [
   ["Trưởng kíp",       "Nguyễn Lâm Tiến",    "Đỗ Văn Anh",         "Trịnh Xuân An",     "Tào Trọng Thi",      "Vũ Huy Hùng"],
   ["Trực chính GM",    "Nguyễn Hồng Quang",  "Trần Nhật Huy",      "Võ Thành Trung",    "Phùng Ngọc Tú",      "Nguyễn Thành Nguyên"],
   ["Trực phụ điện MR", "Nguyễn Khánh Toàn", "Lê Hoài Bảo",        "Lê Vũ Minh Trung",  "Phạm Đình Đức",      "Lê Trọng Toàn"],
-  ["Trực phụ cơ MR",   "Nguyễn Quang Minh",  "Rmah Thắng",         "Phạm Thanh Tùng",   "Nguyễn Văn Trung",   ""]
+  ["Trực phụ cơ MR",   "Nguyễn Quang Minh",  "Rmah Thắng",         "Phạm Thanh Tùng",   "Nguyễn Văn Trung",   "Lê Trọng Toàn1"]
 ];
 
 export const SHIFTS = [

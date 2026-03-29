@@ -1,612 +1,487 @@
-import { RULES, SHIFTS } from '../constants';
-import { xacDinhCa, timThay, isForbidden, shiftPenalty, buildConflict, fmtIn, timNghi } from './shiftHelpers';
+import JSZip from 'jszip';
+import { fmtVN, abbrev } from './shiftHelpers';
 
-export interface Leave {
-  kip: number;
-  start: Date;
-  end: Date;
-  ten: string;
-  chucDanh: string;
+function xe(s: string) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-export interface ResultItem {
-  ngay: Date;
-  ca: string;
-  kipThay: number;
-  nguoiThay: string;
-  isConflict: boolean;
-  conflictNote?: string;
-  isOverlapDay?: boolean;
-  isCKSwap?: boolean;
-  swapAbsentTen?: string;
-  relievedTen?: string;
-  relievedKip?: number;
+function rpr(o: any = {}) {
+  const bold = o.bold || false, italic = o.italic || false, size = o.size || 24, underline = o.underline || false;
+  return '<w:rPr>' + (bold ? '<w:b/>' : '')
+    + '<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>'
+    + '<w:sz w:val="' + size + '"/><w:szCs w:val="' + size + '"/>'
+    + (italic ? '<w:i/>' : '') + (underline ? '<w:u w:val="single"/>' : '')
+    + '</w:rPr>';
 }
 
-export function buildMultiLeaveResults(leaves: Leave[], chucDanh: string, staffData: string[][]) {
-  const results = leaves.map(l => ({
-    ten: l.ten,
-    kip: l.kip,
-    start: l.start,
-    end: l.end,
-    chucDanh: l.chucDanh || '',
-    ketQua: [] as ResultItem[]
-  }));
+function wrun(text: string, opts: any = {}) {
+  return '<w:r>' + rpr(opts) + '<w:t xml:space="preserve">' + xe(text) + '</w:t></w:r>';
+}
 
-  const kipToIdx: Record<number, number> = {};
-  leaves.forEach((l, i) => { kipToIdx[l.kip] = i; });
+function wpara(content: string, o: any = {}) {
+  const align = o.align || 'left';
+  const spB = o.spBefore || 0, spA = o.spAfter || 0;
+  const indent = o.indent ? '<w:ind w:left="' + o.indent.left + '"/>' : '';
+  return '<w:p><w:pPr><w:jc w:val="' + align + '"/><w:spacing w:before="' + spB + '" w:after="' + spA + '"/>' + indent + '</w:pPr>' + content + '</w:p>';
+}
 
-  const coverCount: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-  const accumulatedCoverCount: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-  const reliefTracker: Record<number, { C: number, K: number, N: number, workingShiftsMissed: number, reliefsDone: number, reliefsReceivedByKip: Record<number, number>, lastCycleShift?: 'N' | 'C' | 'K', firstSwapType?: 'N' | 'C' | 'K' }> = {};
-  const dayShifts: Record<string, Record<number, string | undefined>> = {};
-  const blockedNextK: Record<string, number[]> = {};
-  const blockedNextKMeta: Record<string, number> = {};
-  const extraRows: any[] = [];
-  let hasConflict = false;
+function emptyP(spB: number = 0, spA: number = 0) {
+  return '<w:p><w:pPr><w:spacing w:before="' + spB + '" w:after="' + spA + '"/></w:pPr></w:p>';
+}
 
-  const allDates: Record<string, Date> = {};
-  leaves.forEach(l => {
-    let d = new Date(l.start);
-    while (d <= l.end) {
-      allDates[fmtIn(d)] = new Date(d);
-      d.setDate(d.getDate() + 1);
-    }
-  });
+function makeBorders(solid: boolean) {
+  if (solid) {
+    return '<w:tcBorders>'
+      + '<w:top w:val="single" w:sz="6" w:color="000000"/>'
+      + '<w:left w:val="single" w:sz="6" w:color="000000"/>'
+      + '<w:bottom w:val="single" w:sz="6" w:color="000000"/>'
+      + '<w:right w:val="single" w:sz="6" w:color="000000"/>'
+      + '</w:tcBorders>';
+  }
+  return '<w:tcBorders>'
+    + '<w:top w:val="none" w:sz="0" w:color="FFFFFF"/>'
+    + '<w:left w:val="none" w:sz="0" w:color="FFFFFF"/>'
+    + '<w:bottom w:val="none" w:sz="0" w:color="FFFFFF"/>'
+    + '<w:right w:val="none" w:sz="0" w:color="FFFFFF"/>'
+    + '</w:tcBorders>';
+}
 
-  const processedDates: Record<string, boolean> = {};
+function wtc(o: any) {
+  const w = o.w, content = o.content, gridSpan = o.gridSpan || 1;
+  const vMerge = o.vMerge || '', borders = o.borders !== false, shading = o.shading || null;
+  const gs = gridSpan > 1 ? '<w:gridSpan w:val="' + gridSpan + '"/>' : '';
+  const vm = vMerge === 'restart' ? '<w:vMerge w:val="restart"/>' : vMerge === 'cont' ? '<w:vMerge/>' : '';
+  const sh = shading ? '<w:shd w:val="clear" w:color="auto" w:fill="' + shading + '"/>' : '';
+  return '<w:tc><w:tcPr>'
+    + '<w:tcW w:w="' + w + '" w:type="dxa"/>' + gs + vm
+    + makeBorders(borders) + sh
+    + '<w:vAlign w:val="top"/>'
+    + '<w:tcMar><w:top w:w="80" w:type="dxa"/><w:left w:w="120" w:type="dxa"/>'
+    + '<w:bottom w:w="80" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tcMar>'
+    + '</w:tcPr>' + content + '</w:tc>';
+}
 
-  // Pre-calculate total covers for each kip during the entire leave period
-  // to determine eligibility for relief swaps (>= 3 covers = 1 relief)
-  const kipCoverStats: Record<number, { N: number, C: number, K: number, total: number }> = {
-    1: { N: 0, C: 0, K: 0, total: 0 },
-    2: { N: 0, C: 0, K: 0, total: 0 },
-    3: { N: 0, C: 0, K: 0, total: 0 },
-    4: { N: 0, C: 0, K: 0, total: 0 },
-    5: { N: 0, C: 0, K: 0, total: 0 }
-  };
-  Object.keys(allDates).forEach(dKey => {
-    const d = allDates[dKey];
-    const activeOnDay = leaves.filter(l => d >= l.start && d <= l.end);
-    activeOnDay.forEach(l => {
-      const absentKip = l.kip;
-      const s = xacDinhCa(d, absentKip);
-      if (s !== 'O' && RULES[absentKip] && RULES[absentKip][s]) {
-        const coverer = RULES[absentKip][s].k;
-        kipCoverStats[coverer].total++;
-        if (s === 'N') kipCoverStats[coverer].N++;
-        if (s === 'C') kipCoverStats[coverer].C++;
-        if (s === 'K') kipCoverStats[coverer].K++;
+function wtr(cells: string[]) {
+  return '<w:tr><w:trPr/>' + cells.join('') + '</w:tr>';
+}
+
+function wtable(rows: string[], colWidths: number[]) {
+  const total = colWidths.reduce((a, b) => a + b, 0);
+  const grid = colWidths.map(w => '<w:gridCol w:w="' + w + '"/>').join('');
+  const tblBrd = '<w:tblBorders>'
+    + '<w:top w:val="none" w:sz="0" w:color="FFFFFF"/>'
+    + '<w:left w:val="none" w:sz="0" w:color="FFFFFF"/>'
+    + '<w:bottom w:val="none" w:sz="0" w:color="FFFFFF"/>'
+    + '<w:right w:val="none" w:sz="0" w:color="FFFFFF"/>'
+    + '<w:insideH w:val="none" w:sz="0" w:color="FFFFFF"/>'
+    + '<w:insideV w:val="none" w:sz="0" w:color="FFFFFF"/>'
+    + '</w:tblBorders>';
+  return '<w:tbl><w:tblPr>'
+    + '<w:tblW w:w="' + total + '" w:type="dxa"/>'
+    + '<w:tblLayout w:type="fixed"/>'
+    + tblBrd
+    + '<w:tblCellMar>'
+    + '<w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/>'
+    + '<w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/>'
+    + '</w:tblCellMar>'
+    + '</w:tblPr><w:tblGrid>' + grid + '</w:tblGrid>' + rows.join('') + '</w:tbl>';
+}
+
+function twoCol(lc: string, rc: string, CW: number) {
+  const HW = Math.floor(CW / 2);
+  return wtable([wtr([
+    wtc({ w: HW, borders: false, content: lc }),
+    wtc({ w: CW - HW, borders: false, content: rc })
+  ])], [HW, CW - HW]);
+}
+
+function buildDateStr(val: string) {
+  if (val) {
+    const nd = new Date(val + 'T00:00:00');
+    return 'Gia Lai, ngày ' + nd.getDate() + ' tháng ' + (nd.getMonth() + 1) + ' năm ' + nd.getFullYear();
+  }
+  return 'Gia Lai, ngày      tháng      năm     ';
+}
+function isOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string) {
+  return !(new Date(aEnd) < new Date(bStart) || new Date(bEnd) < new Date(aStart));
+}
+export function buildDocXml(currentResult: any, config: any) {
+  const d = currentResult;
+  const soVanBan = config.soVanBan || '';
+  const nguoiKy = config.nguoiKy || 'Quản Đốc';
+  const ngayKyVal = config.ngayKy || '';
+
+  const CW = 9360, c0 = 2200, c1 = 1500, HW = Math.floor(CW / 2);
+  const GRAY = 'D9D9D9';
+  const shiftOrd: Record<string, number> = { N: 0, C: 1, K: 2 };
+  const MAX_PER_ROW = 4;
+
+  const allResults = d.allResults;
+  const extraRows = d.extraRows || [];
+// Gom theo chức danh
+const roleGroups: Record<string, any[]> = {};
+
+allResults.forEach((res: any) => {
+  const role = res.chucDanh || d.chucDanh || '';
+  if (!roleGroups[role]) roleGroups[role] = [];
+  roleGroups[role].push(res);
+});
+
+// Tìm role có >= 2 người nghỉ trùng thời gian
+const validRoles: string[] = [];
+
+Object.keys(roleGroups).forEach(role => {
+  const list = roleGroups[role];
+
+  let hasOverlap = false;
+
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      if (isOverlap(list[i].start, list[i].end, list[j].start, list[j].end)) {
+        hasOverlap = true;
+        break;
       }
-    });
-  });
-
-  function getNextUnprocessed() {
-    const keys = Object.keys(allDates).sort();
-    for (let i = 0; i < keys.length; i++) if (!processedDates[keys[i]]) return keys[i];
-    return null;
+    }
+    if (hasOverlap) break;
   }
 
-  let dateKey: string | null;
-  while ((dateKey = getNextUnprocessed()) !== null) {
-    processedDates[dateKey] = true;
-    const ngay = allDates[dateKey];
-    const tomorrow = new Date(ngay.getTime() + 86400000);
-    const prevKey = fmtIn(new Date(ngay.getTime() - 86400000));
+  if (hasOverlap) validRoles.push(role);
+});
+const extraNotesByRole: Record<string, Set<string>> = {};
 
-    const activeLeaves = leaves.filter(l => ngay >= l.start && ngay <= l.end);
-    const absentSet: Record<number, boolean> = {};
-    activeLeaves.forEach(l => { absentSet[l.kip] = true; });
-    const availKips = [1, 2, 3, 4, 5].filter(k => !absentSet[k]);
+// init
+validRoles.forEach(role => {
+  extraNotesByRole[role] = new Set();
+});
 
-    const sh: Record<number, string> = {};
-    const shNext: Record<number, string> = {};
-    for (let k = 1; k <= 5; k++) {
-      sh[k] = xacDinhCa(ngay, k);
-      shNext[k] = xacDinhCa(tomorrow, k);
+// lấy từ ketQua
+allResults.forEach((res: any) => {
+  const role = res.chucDanh || d.chucDanh || '';
+  if (!validRoles.includes(role)) return;
+
+  res.ketQua.forEach((it: any) => {
+    if (it.isSwap || it.relievedTen) {
+      const dateStr = it.ca + '-' + fmtVN(it.ngay).slice(0, 5);
+      const relieved = it.relievedTen || it.swapAbsentTen || res.ten;
+
+      extraNotesByRole[role].add(
+        `${abbrev(it.nguoiThay)} trực thay ${abbrev(relieved)} ca ${dateStr}`
+      );
     }
+  });
+});
 
-    const prevDay = new Date(ngay.getTime() - 86400000);
-    const prevPrevDay = new Date(ngay.getTime() - 172800000);
-    const prevShift: Record<number, string> = {};
-    const prevPrevShift: Record<number, string> = {};
-    for (let k = 1; k <= 5; k++) {
-      prevShift[k] = (dayShifts[prevKey] && dayShifts[prevKey][k] != null)
-        ? (dayShifts[prevKey][k] as string)
-        : xacDinhCa(prevDay, k);
-      
-      const prevPrevKey = fmtIn(prevPrevDay);
-      prevPrevShift[k] = (dayShifts[prevPrevKey] && dayShifts[prevPrevKey][k] != null)
-        ? (dayShifts[prevPrevKey][k] as string)
-        : xacDinhCa(prevPrevDay, k);
-    }
-    const tomorrowKey = fmtIn(tomorrow);
-    
-    if (!dayShifts[dateKey]) dayShifts[dateKey] = {};
+// lấy từ extraRows
+extraRows.forEach((ex: any) => {
+  if (!ex.isSwap) return;
 
-    function getNextActual(kip: number, offset: number = 1) {
-      const targetDate = new Date(ngay.getTime() + 86400000 * offset);
-      const targetKey = fmtIn(targetDate);
-      
-      const isOnLeave = leaves.some(l => targetDate >= l.start && targetDate <= l.end && l.kip === kip);
-      if (isOnLeave) return 'O';
+  const role = ex.chucDanh;
+  if (!validRoles.includes(role)) return;
 
-      if (dayShifts[targetKey] && dayShifts[targetKey][kip])
-        return dayShifts[targetKey][kip];
-      const tmrBlocked = blockedNextK[targetKey] || [];
-      if (tmrBlocked.indexOf(kip) !== -1) return 'O';
-      return xacDinhCa(targetDate, kip);
-    }
+  const dateStr = ex.ca + '-' + fmtVN(ex.ngay).slice(0, 5);
+  const relieved = ex.relievedTen || ex.absentTen;
 
-    // Map to track who is originally in which shift today
-    const origAbsentKipMap: Record<string, number> = {};
-    ['N', 'C', 'K', 'O'].forEach(s => {
-      for (let k = 1; k <= 5; k++) {
-        if (sh[k] === s) {
-          origAbsentKipMap[s] = k;
-        }
+  extraNotesByRole[role].add(
+    `${abbrev(ex.nguoiThay)} trực thay ${abbrev(relieved)} ca ${dateStr}`
+  );
+});
+  const swapRows = extraRows.filter((r: any) => r.isSwap);
+  const chainRows = extraRows.filter((r: any) => r.isCKChain && !r.isSwap);
+
+  const hdrTbl = twoCol(
+    wpara(wrun('CÔNG TY THỦY ĐIỆN IALY', { size: 22 }), { align: 'center', spAfter: 40 })
+    + wpara(wrun('PHÂN XƯỞNG VẬN HÀNH IALY', { bold: true, size: 22, underline: true }), { align: 'center' }),
+    wpara(wrun('CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM', { bold: true, size: 20 }), { align: 'center', spAfter: 40 })
+    + wpara(wrun('Độc lập - Tự do - Hạnh phúc', { bold: true, size: 24, underline: true }), { align: 'center' }),
+    CW
+  );
+  const soNgayTbl = twoCol(
+    wpara(wrun('Số: ' + (soVanBan || '      ') + '/VHIALY', { size: 24 }), { align: 'center', spBefore: 40, spAfter: 40 }),
+    wpara(wrun(buildDateStr(ngayKyVal), { italic: true, size: 24 }), { align: 'center' }),
+    CW
+  );
+  const title = wpara(wrun('LỊCH TRỰC THAY CA VẬN HÀNH', { bold: true, size: 28 }),
+    { align: 'center', spBefore: 120, spAfter: 120 });
+
+  function buildPersonRows(res: any) {
+    const rows = res.ketQua.slice();
+    const resCD = res.chucDanh || d.chucDanh || '';
+    chainRows.forEach((ex: any) => {
+      if (ex.absentKip === res.kip && ex.chucDanh === resCD) rows.push(ex);
+    });
+    rows.sort((a: any, b: any) => {
+      if (a.ngay < b.ngay) return -1; if (a.ngay > b.ngay) return 1;
+      return (shiftOrd[a.ca] || 0) - (shiftOrd[b.ca] || 0);
+    });
+    return rows;
+  }
+
+  let maxCa = 0;
+  allResults.forEach((res: any) => {
+    const rows = buildPersonRows(res);
+    if (rows.length > maxCa) maxCa = rows.length;
+  });
+  const nCols = Math.min(MAX_PER_ROW, maxCa || 1);
+  const caW = Math.floor((CW - c0 - c1) / nCols);
+  const colW = [c0, c1]; for (let k = 0; k < nCols; k++) colW.push(caW);
+  const tot = colW.reduce((a, b) => a + b, 0); colW[colW.length - 1] += (CW - tot);
+
+  const tableRows = [];
+  tableRows.push(wtr([
+    wtc({ w: c0, shading: GRAY, content: wpara(wrun('Tên người cần được\ntrực thay', { bold: true, size: 24 }), { align: 'center' }) }),
+    wtc({ w: c1, shading: GRAY, content: wpara(wrun('Chức danh\nhiện tại', { bold: true, size: 24 }), { align: 'center' }) }),
+    wtc({ w: CW - c0 - c1, gridSpan: nCols, shading: GRAY, content: wpara(wrun('Tên người trực thay', { bold: true, size: 24 }), { align: 'center' }) })
+  ]));
+
+  allResults.forEach((res: any) => {
+    // Collect notes for this person (Swaps/Conflicts) FIRST
+    const personNotes: string[] = [];
+    const resCD = res.chucDanh || d.chucDanh || '';
+
+    res.ketQua.forEach((it: any) => {
+      if (it.conflictNote && (it.conflictNote.includes('Đổi ca') || it.conflictNote.includes('Hoán đổi') || it.relievedTen)) {
+        const dateStr = it.ca + '-' + fmtVN(it.ngay).slice(0, 5);
+        const relieved = it.relievedTen || it.swapAbsentTen || res.ten;
+        personNotes.push(`${abbrev(it.nguoiThay)} trực thay ${abbrev(relieved)} ca ${dateStr}.`);
+      }
+    });
+    extraRows.forEach((ex: any) => {
+      if (ex.isSwap && ex.absentKip === res.kip && ex.chucDanh === resCD) {
+        const dateStr = ex.ca + '-' + fmtVN(ex.ngay).slice(0, 5);
+        const relieved = ex.relievedTen || ex.absentTen;
+        personNotes.push(`${abbrev(ex.nguoiThay)} trực thay ${abbrev(relieved)} ca ${dateStr}.`);
       }
     });
 
-    // Track relief progress and determine if a swap is needed today
-    const forcedAssignments: Record<number, string> = {};
-    const forcedReliefs: Array<{ absentKip: number, shift: string, helperKip: number, relievedKip: number, relievedTen: string }> = [];
+    const rows = buildPersonRows(res);
+    let groups = [];
+    for (let i = 0; i < rows.length; i += nCols) groups.push(rows.slice(i, i + nCols));
+    if (!groups.length) groups = [[]];
 
-    activeLeaves.forEach(l => {
-      const absentKip = l.kip;
-      if (!reliefTracker[absentKip]) {
-        reliefTracker[absentKip] = { 
-          C: 0, K: 0, N: 0, 
-          workingShiftsMissed: 0, 
-          reliefsDone: 0, 
-          reliefsReceivedByKip: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
-          firstSwapType: undefined
-        };
-      }
-      
-      const s = xacDinhCa(ngay, absentKip);
-      const helperKip = [1, 2, 3, 4, 5].find(k => k !== absentKip && k !== RULES[absentKip].N.k && k !== RULES[absentKip].C.k && k !== RULES[absentKip].K.k)!;
+    const nghiStr = '(nghỉ phép từ ' + fmtVN(res.start) + ' đến ' + fmtVN(res.end) + ')';
 
-      if (s !== 'O') {
-        // Increment tracker
-        reliefTracker[absentKip].workingShiftsMissed++;
-        if (s === 'C') reliefTracker[absentKip].C++;
-        if (s === 'K') {
-          reliefTracker[absentKip].K++;
-        }
-        if (s === 'N') reliefTracker[absentKip].N++;
+    groups.forEach((grp, gi) => {
+      const isFirst = (gi === 0);
+      const isLast = (gi === groups.length - 1);
+      const caRow = [];
+      if (isFirst) {
+        caRow.push(wtc({
+          w: c0, vMerge: 'restart',
+          content: wpara(wrun(res.ten, { size: 24 }), { align: 'center', spAfter: 20 })
+            + wpara(wrun(nghiStr, { italic: true, size: 20 }), { align: 'center' })
+        }));
+        caRow.push(wtc({
+          w: c1, vMerge: 'restart',
+          content: wpara(wrun(resCD, { size: 24 }), { align: 'center' })
+        }));
+      } else {
+        caRow.push(wtc({ w: c0, vMerge: 'cont', content: emptyP() }));
+        caRow.push(wtc({ w: c1, vMerge: 'cont', content: emptyP() }));
       }
 
-      // Relief logic: Only for 1-person leave
-      // Requirement: Only start relief after at least 3 working shifts (N, C, K) have been missed
-      // And the helper kip must be naturally Off today AND it must be an "O tròn" (Off after K)
-      const isOTron = prevShift[helperKip] === 'K' && sh[helperKip] === 'O';
-      
-      // 1-person leave relief logic (Đổi ca)
-      if (leaves.length === 1 && isOTron && !absentSet[helperKip]) {
-        const requiredShiftsToday = new Set<string>();
-        for (let k = 1; k <= 5; k++) {
-          const st = xacDinhCa(ngay, k);
-          if (st !== 'O') requiredShiftsToday.add(st);
-        }
+      // Add shifts in this group
+      for (let i = 0; i < grp.length; i++) {
+        const it = grp[i];
+        caRow.push(wtc({
+          w: colW[i + 2], shading: it ? GRAY : '',
+          content: wpara(wrun(it ? it.ca + '-' + fmtVN(it.ngay).slice(0, 5) : '', { bold: true, size: 24 }), { align: 'center' })
+        }));
+      }
 
-        let missedShiftToCompensate: 'N' | 'C' | 'K' | null = null;
-        let reliefShift: 'N' | 'C' | 'K' | null = null;
-        let targetKip: number | null = null;
-        let targetRelief: 'N' | 'C' | 'K' | null = null;
+      let noteIncludedInThisRow = false;
+      const uniqueNotes = Array.from(new Set(personNotes)) as string[];
+
+      if (isLast && grp.length < nCols) {
+        const remainingCols = nCols - grp.length;
+        const remainingW = colW.slice(grp.length + 2).reduce((a, b) => a + b, 0);
         
-        // Chu kỳ đổi ca: Lần 1 (K), Lần 2 (N/C), Lần 3 (N/C), Lần 4 (K)...
-        const cycleIdx = reliefTracker[absentKip].reliefsDone % 3;
-
-        // Calculate cover stats for THIS specific leave to ensure "trong suốt kỳ nghỉ" condition
-        const currentLeaveCoverStats: Record<number, { N: number, C: number, K: number }> = {
-          1: { N: 0, C: 0, K: 0 }, 2: { N: 0, C: 0, K: 0 }, 3: { N: 0, C: 0, K: 0 }, 4: { N: 0, C: 0, K: 0 }, 5: { N: 0, C: 0, K: 0 }
-        };
-        Object.keys(allDates).forEach(dKey => {
-          const d = allDates[dKey];
-          // Chỉ tính trong phạm vi nghỉ của người này để tránh cộng dồn sai từ các kỳ nghỉ khác
-          if (d < l.start || d > l.end) return;
-          const s = xacDinhCa(d, absentKip);
-          if (s !== 'O' && RULES[absentKip] && RULES[absentKip][s]) {
-            const coverer = RULES[absentKip][s].k;
-            if (s === 'N') currentLeaveCoverStats[coverer].N++;
-            if (s === 'C') currentLeaveCoverStats[coverer].C++;
-            if (s === 'K') currentLeaveCoverStats[coverer].K++;
-          }
-        });
-
-        const kipN = RULES[absentKip].N.k;
-        const kipC = RULES[absentKip].C.k;
-        const kipK = RULES[absentKip].K.k;
-        
-        const countN = currentLeaveCoverStats[kipN].N;
-        const countC = currentLeaveCoverStats[kipC].C;
-        const countK = currentLeaveCoverStats[kipK].K;
-
-        if (cycleIdx === 0) {
-          // Lần 1: Kích hoạt khi kíp hỗ trợ đạt mốc 3 ca trực thay cùng loại (3N, 3C hoặc 3K) tính trong suốt kỳ nghỉ
-          // Logic ưu tiên: 
-          // 1. Mốc đặc biệt 3K, 3N, 2C -> Ưu tiên đổi ca K lần 1
-          if (countK >= 3 && countN >= 3 && countC >= 2) {
-            targetRelief = 'K';
-          }
-          // 2. Nếu bất kỳ loại ca nào (N, C, K) đạt mốc >=4 ca trực thay: Ưu tiên đổi ca K lần đầu.
-          else if (countC >= 4 || countN >= 4 || countK >= 4) {
-            targetRelief = 'K';
-          } else if (countC >= 3 && countN >= 3 && countK >= 3) {
-            targetRelief = 'K';
-          } else if (countC >= 3 && countN >= 3) {
-            targetRelief = 'C';
-          } else if (countC >= 3) {
-            targetRelief = 'C';
-          } else if (countN >= 3) {
-            targetRelief = 'N';
-          } else if (countK >= 3) {
-            targetRelief = 'K';
-          } else if (countK >= 2 && countN >= 2 && countC >= 2) {
-            targetRelief = 'K';
-          } else if (countC >= 2 && countN >= 2) {
-            targetRelief = 'C';
-          } else if (countK >= 2 && countN >= 2) {
-            targetRelief = 'K';
-          } else if (countK >= 2 && countC >= 2) {
-            targetRelief = 'K';
-          } else if (countC >= 2) {
-            targetRelief = 'C';
-          } else if (countN >= 2) {
-            targetRelief = 'N';
-          } else if (countK >= 2) {
-            targetRelief = 'K';
-          }
-
-          if (targetRelief) {
-            missedShiftToCompensate = targetRelief;
-          }
-        } else if (cycleIdx === 1) {
-          // Lần 2, 5, 8...: 
-          // Ưu tiên mốc 3K, 3N, 2C: Lần 2 là bù đắp cho ca N
-          if (countK >= 3 && countN >= 3 && countC >= 2) {
-            missedShiftToCompensate = 'N';
-          } 
-          // Nếu Lần 1 đã là K (do mốc >=4 hoặc 3N-3C-3K)
-          else if (reliefTracker[absentKip].firstSwapType === 'K') {
-            // Xoay vòng N/C
-            if (reliefTracker[absentKip].N > reliefTracker[absentKip].C) {
-              missedShiftToCompensate = 'N';
-            } else {
-              missedShiftToCompensate = 'C';
-            }
-          } 
-          // Nếu Lần 1 KHÔNG phải là K, nhưng đạt mốc 3N-3C hoặc 3C-3K -> Lần 2 là K
-          else if ((countN >= 3 && countC >= 3) || (countC >= 3 && countK >= 3)) {
-            missedShiftToCompensate = 'K';
-          } else {
-            // Nếu lần 1 là N hoặc C: Đổi ca còn lại trong cặp N-C
-            if (reliefTracker[absentKip].firstSwapType === 'N') {
-              missedShiftToCompensate = 'C';
-            } else if (reliefTracker[absentKip].firstSwapType === 'C') {
-              missedShiftToCompensate = 'N';
-            } else {
-              // Fallback
-              if (reliefTracker[absentKip].N > reliefTracker[absentKip].C) {
-                missedShiftToCompensate = 'N';
-              } else {
-                missedShiftToCompensate = 'C';
-              }
-            }
-          }
+        // Gộp các ô trống: Nếu còn trống > 1 ô và có ghi chú, chèn ghi chú vào đó.
+        // Nếu chỉ còn trống 1 ô, ta sẽ để trống ô đó và đẩy ghi chú xuống hàng riêng biệt bên dưới.
+        if (uniqueNotes.length > 0 && remainingCols > 1) {
+          let noteContent = '';
+          uniqueNotes.forEach(line => {
+            noteContent += wpara(wrun(line, { size: 24 }), { spBefore: 40, spAfter: 40 });
+          });
+          caRow.push(wtc({
+            w: remainingW, gridSpan: remainingCols, vMerge: 'restart',
+            content: noteContent
+          }));
+          noteIncludedInThisRow = true;
         } else {
-          // Lần 3, 6, 9...: Ca còn lại
-          // Nếu lần 1 là K, lần 2 là N/C thì lần 3 là C/N
-          if (reliefTracker[absentKip].firstSwapType === 'K') {
-            if (reliefTracker[absentKip].lastCycleShift === 'N') {
-              missedShiftToCompensate = 'C';
-            } else {
-              missedShiftToCompensate = 'N';
-            }
-          } else {
-            // Nếu lần 1 là N hoặc C, lần 2 là C hoặc N, thì lần 3 là K
-            // Nếu lần 2 đã bị ghi đè thành K (do mốc 3N-3C hoặc 3C-3K), thì lần 3 là ca còn lại của cặp N-C
-            if (reliefTracker[absentKip].lastCycleShift === 'K') {
-              if (reliefTracker[absentKip].firstSwapType === 'N') {
-                missedShiftToCompensate = 'C';
-              } else {
-                missedShiftToCompensate = 'N';
-              }
-            } else {
-              missedShiftToCompensate = 'K';
-            }
-          }
+          // Gộp các ô trống còn lại làm một (merge) để bảng sạch sẽ hơn
+          caRow.push(wtc({ w: remainingW, gridSpan: remainingCols, content: emptyP() }));
         }
+      }
+      tableRows.push(wtr(caRow));
 
-        if (missedShiftToCompensate) {
-          targetKip = RULES[absentKip][missedShiftToCompensate].k;
-          // Quan trọng: reliefShift phải là ca mà targetKip đang trực tự nhiên hôm nay
-          if (targetKip && sh[targetKip] !== 'O') {
-            reliefShift = sh[targetKip] as 'N' | 'C' | 'K';
-          }
+      const tenRow = [
+        wtc({ w: c0, vMerge: 'cont', content: emptyP() }),
+        wtc({ w: c1, vMerge: 'cont', content: emptyP() })
+      ];
+      for (let i = 0; i < grp.length; i++) {
+        const it = grp[i];
+        tenRow.push(wtc({
+          w: colW[i + 2],
+          content: it ? wpara(wrun(abbrev(it.nguoiThay), { size: 24 }), { align: 'center' }) : emptyP()
+        }));
+      }
+
+      if (noteIncludedInThisRow) {
+        const remainingCols = nCols - grp.length;
+        const remainingW = colW.slice(grp.length + 2).reduce((a, b) => a + b, 0);
+        tenRow.push(wtc({ w: remainingW, gridSpan: remainingCols, vMerge: 'cont', content: emptyP() }));
+      } else if (isLast && grp.length < nCols) {
+        const remainingCols = nCols - grp.length;
+        const remainingW = colW.slice(grp.length + 2).reduce((a, b) => a + b, 0);
+        tenRow.push(wtc({ w: remainingW, gridSpan: remainingCols, content: emptyP() }));
+      }
+      tableRows.push(wtr(tenRow));
+
+      // Nếu có ghi chú nhưng chưa được chèn (do hàng đầy hoặc chỉ còn 1 ô trống),
+      // hoặc nếu chỉ còn trống đúng 1 ô (theo yêu cầu: tự động thêm 1 hàng riêng biệt bên dưới)
+      const remainingCount = nCols - grp.length;
+      const shouldAddSeparateRow = (isLast && !noteIncludedInThisRow && uniqueNotes.length > 0) || (isLast && remainingCount === 1);
+
+      if (shouldAddSeparateRow) {
+        let noteContent = '';
+        if (uniqueNotes.length > 0) {
+          uniqueNotes.forEach(line => {
+            noteContent += wpara(wrun(line, { size: 24 }), { spBefore: 40, spAfter: 40 });
+          });
+        } else {
+          noteContent = emptyP(40, 40); // Hàng trống nếu không có ghi chú nhưng còn trống 1 ô
         }
-
-        // Điều kiện: Kíp được thay (targetKip) phải đang có ca trực tự nhiên (reliefShift đã được gán ở trên)
-        if (targetKip && reliefShift) {
-          if (!absentSet[targetKip] && !forcedAssignments[helperKip] && !forcedAssignments[targetKip]) {
-            // Điều kiện tích lũy theo yêu cầu người dùng:
-            // Lần 1: Covered >= 2, Missed >= 2
-            // Lần 2: Covered >= 3, Missed >= 5
-            // Lần 3: Covered >= 4, Missed >= 7
-            // Lần 4: Covered >= 5, Missed >= 9
-            // Lần 5: Covered >= 6, Missed >= 11
-            // Lần 6: Covered >= 7, Missed >= 13
-            let canRelieve = false;
-            const totalReliefs = reliefTracker[absentKip].reliefsDone;
-            const totalMissed = reliefTracker[absentKip].workingShiftsMissed;
-            const activeShiftType = (cycleIdx === 0) ? targetRelief : missedShiftToCompensate;
-            const currentShiftCount = activeShiftType ? currentLeaveCoverStats[targetKip][activeShiftType] : 0;
-
-            if (totalReliefs === 0) { // Lần 1
-              // Chỉ thực hiện khi đã có ít nhất 2 ca trực thay (tương đương người nghỉ đã nghỉ ít nhất 2 ca)
-              if (totalMissed >= 2) {
-                if (currentShiftCount >= 2) canRelieve = true;
-                // Kích hoạt đặc biệt cho lần 1 khi đạt mốc 3K, 3N, 2C
-                if (countK >= 3 && countN >= 3 && countC >= 2) canRelieve = true;
-              }
-            } else if (totalReliefs === 1) { // Lần 2
-              if (currentShiftCount >= 3 && totalMissed >= 5) canRelieve = true;
-              // Kích hoạt đặc biệt cho lần 2 khi đạt mốc 3K, 3N, 2C
-              if (countK >= 3 && countN >= 3 && countC >= 2) canRelieve = true;
-            } else if (totalReliefs === 2) { // Lần 3
-              if (currentShiftCount >= 4 && totalMissed >= 7) canRelieve = true;
-            } else if (totalReliefs === 3) { // Lần 4
-              if (currentShiftCount >= 5 && totalMissed >= 9) canRelieve = true;
-            } else if (totalReliefs === 4) { // Lần 5
-              if (currentShiftCount >= 6 && totalMissed >= 11) canRelieve = true;
-            } else if (totalReliefs === 5) { // Lần 6
-              if (currentShiftCount >= 7 && totalMissed >= 13) canRelieve = true;
-            } else {
-              // Từ lần 7 trở đi: Tiếp tục tăng dần số ca tích lũy và số ca nghỉ yêu cầu
-              if (currentShiftCount >= (totalReliefs + 2) && totalMissed >= (totalReliefs * 2 + 3)) canRelieve = true;
-            }
-
-              if (canRelieve) {
-                forcedAssignments[helperKip] = reliefShift;
-                forcedAssignments[targetKip] = 'O';
-                forcedReliefs.push({ 
-                  absentKip, 
-                  shift: reliefShift, 
-                  helperKip, 
-                  relievedKip: targetKip,
-                  relievedTen: timThay(targetKip, chucDanh, staffData)
-                });
-                
-                // Lưu lại loại ca đã đổi ở lần 1
-                if (cycleIdx === 0) {
-                  reliefTracker[absentKip].firstSwapType = missedShiftToCompensate as 'N' | 'C' | 'K';
-                }
-                
-                // Lưu lại ca đã bù đắp ở lần 2 để lần 3 chọn ca còn lại
-                if (cycleIdx === 1) {
-                  reliefTracker[absentKip].lastCycleShift = missedShiftToCompensate as 'N' | 'C' | 'K';
-                }
-                
-                reliefTracker[absentKip].reliefsReceivedByKip[targetKip]++;
-                reliefTracker[absentKip].reliefsDone++;
-              }
-          }
-        }
+        tableRows.push(wtr([
+          wtc({ w: c0, vMerge: 'cont', content: emptyP() }),
+          wtc({ w: c1, vMerge: 'cont', content: emptyP() }),
+          wtc({ w: CW - c0 - c1, gridSpan: nCols, content: noteContent })
+        ]));
       }
     });
+  });
 
-    let bestScore = Infinity;
-    let bestConfig: Record<number, string> = {};
+  const mainTbl = wtable(tableRows, colW);
+let extraNoteBlock = '';
 
-    function solve(shiftIdx: number, usedPeople: Set<number>, current: Record<number, string>, currentAvail: number[]) {
-      if (shiftIdx === 3) {
-        const fullConfig: Record<number, string> = { ...current };
-        // Fill in 'O' for anyone not assigned and not already forced
-        [1, 2, 3, 4, 5].forEach(k => {
-          if (!fullConfig[k]) fullConfig[k] = 'O';
-        });
+validRoles.forEach(role => {
+  const notes = Array.from(extraNotesByRole[role] || []);
 
-        const requiredShifts = new Set<string>();
-        for (let k = 1; k <= 5; k++) {
-          const s = xacDinhCa(ngay, k);
-          if (s !== 'O') requiredShifts.add(s);
-        }
+  extraNoteBlock += wpara(
+    wrun(`Tại ${role} :`, { bold: true, size: 24 }),
+    { spBefore: 100 }
+  );
 
-        let score = 0;
-        const assignedShifts = new Set(Object.values(fullConfig));
-        requiredShifts.forEach(s => {
-          if (!assignedShifts.has(s)) score += 1000000; 
-        });
-
-        for (let k = 1; k <= 5; k++) {
-          const s = fullConfig[k];
-          const naturalS = sh[k];
-          
-          if (s === 'O') {
-            if (naturalS !== 'O' && !absentSet[k]) {
-              // Naturally working but assigned Off - massive penalty unless forced by relief
-              score += 1000000; 
-            }
-            continue;
-          }
-          
-          const origKip = origAbsentKipMap[s];
-          const isOrigAbsent = absentSet[origKip];
-
-          if (k !== origKip) {
-            if (isOrigAbsent) {
-              // Covering a leave - Good, but prefer rule-based person
-              score += 1000;
-              let ruleKip = (origKip && RULES[origKip] && RULES[origKip][s]) ? RULES[origKip][s].k : null;
-              
-              if (ruleKip === k) score -= 500;
-            } else {
-              // Stealing a shift from someone who is NOT on leave - Massive penalty
-              score += 2000000;
-            }
-          }
-
-          const fb = isForbidden(k, s, prevShift, getNextActual, 'O', prevPrevShift);
-          if (fb.bad) score += 5000000; 
-          
-          if (s === 'K' && prevShift[k] === 'N') score -= 30;
-          if (s === 'K' && prevShift[k] === 'K') score += 100;
-        }
-
-        if (score < bestScore) {
-          bestScore = score;
-          bestConfig = fullConfig;
-        }
-        return;
-      }
-
-      const s = ['N', 'C', 'K'][shiftIdx];
-      
-      // If this shift is already forced, skip to next shift
-      const forcedKip = Object.keys(forcedAssignments).find(k => forcedAssignments[Number(k)] === s);
-      if (forcedKip) {
-        solve(shiftIdx + 1, usedPeople, current, currentAvail);
-        return;
-      }
-
-      let assigned = false;
-      for (const p of currentAvail) {
-        if (!usedPeople.has(p)) {
-          usedPeople.add(p);
-          current[p] = s;
-          solve(shiftIdx + 1, usedPeople, current, currentAvail);
-          delete current[p];
-          usedPeople.delete(p);
-          assigned = true;
-        }
-      }
-      if (!assigned || currentAvail.length < 3) {
-         solve(shiftIdx + 1, usedPeople, current, currentAvail);
-      }
-    }
-
-    // Initialize solver with forced assignments
-    const initialUsed = new Set<number>();
-    const initialCurrent: Record<number, string> = {};
-    const effectiveAvailKips = availKips.filter(k => {
-      if (forcedAssignments[k] === 'O') {
-        initialCurrent[k] = 'O';
-        return false;
-      }
-      if (forcedAssignments[k]) {
-        initialUsed.add(k);
-        initialCurrent[k] = forcedAssignments[k];
-        return false;
-      }
-      return true;
+  if (notes.length > 0) {
+    notes.forEach(n => {
+      extraNoteBlock += wpara(
+        wrun(`- ${n}`, { size: 24 }),
+        { indent: { left: 400 } }
+      );
     });
-
-    solve(0, initialUsed, initialCurrent, effectiveAvailKips);
-
-    if (bestScore === Infinity) {
-      bestConfig = {};
-      for (let k = 1; k <= 5; k++) bestConfig[k] = absentSet[k] ? 'O' : sh[k];
-    }
-
-    // Check for missing shifts and report them
-    const finalAssignedShifts = new Set(Object.values(bestConfig));
-    const requiredShiftsToday = new Set<string>();
-    for (let k = 1; k <= 5; k++) {
-      const s = xacDinhCa(ngay, k);
-      if (s !== 'O') requiredShiftsToday.add(s);
-    }
-
-    requiredShiftsToday.forEach(s => {
-      if (!finalAssignedShifts.has(s)) {
-        const absentKip = origAbsentKipMap[s];
-        const tenAbsent = timThay(absentKip, chucDanh, staffData);
-        extraRows.push({
-          ngay, ca: s, kipThay: 0,
-          nguoiThay: '⚠️ CHƯA CÓ NGƯỜI TRỰC',
-          absentKip: absentKip, absentTen: tenAbsent, chucDanh,
-          isConflict: true, conflictNote: `Không tìm được người thay cho Ca ${s} của ${tenAbsent}`,
-          isCKChain: false, isSwap: false, isOverlapDay: activeLeaves.length >= 2
-        });
-        hasConflict = true;
-      }
-    });
-
-    for (let k = 1; k <= 5; k++) {
-      const assignedShift = bestConfig[k];
-      dayShifts[dateKey!][k] = assignedShift;
-      
-      if (assignedShift !== 'O') {
-        const naturalShift = sh[k];
-        const isReplacement = assignedShift !== naturalShift;
-        const absentKip = origAbsentKipMap[assignedShift];
-
-        if (isReplacement || absentSet[absentKip]) {
-          const fb = isForbidden(k, assignedShift, prevShift, getNextActual, 'O', prevPrevShift);
-          const isConf = fb.bad;
-          const noteConf = isConf ? (fb.note || '⚠ Vi phạm ràng buộc ca') : '';
-          
-          const isCK = prevShift[k] === 'C' && assignedShift === 'O' && sh[k] === 'K';
-          const ckNote = isCK ? `⥵ C→K: ${timThay(k, chucDanh, staffData)} vướng ca C hôm trước, không thể trực ca K hôm nay` : '';
-
-          const reliefInfo = forcedReliefs.find(fr => fr.helperKip === k && fr.shift === assignedShift);
-          const actualAbsentKip = reliefInfo ? reliefInfo.absentKip : absentKip;
-          const currentAbsentTen = timThay(actualAbsentKip, chucDanh, staffData);
-          const relievedTen = reliefInfo ? reliefInfo.relievedTen : null;
-          const relievedKip = reliefInfo ? reliefInfo.relievedKip : null;
-
-          if (absentSet[absentKip]) {
-            const idx = kipToIdx[absentKip];
-            if (idx !== undefined) {
-              results[idx].ketQua.push({
-                ngay, ca: assignedShift, kipThay: k,
-                nguoiThay: timThay(k, chucDanh, staffData),
-                relievedTen: relievedTen || undefined,
-                relievedKip: relievedKip || undefined,
-                isConflict: isConf,
-                conflictNote: reliefInfo ? `${timThay(k, chucDanh, staffData)} trực thay ${relievedTen} ca ${assignedShift}` : (ckNote || noteConf),
-                isOverlapDay: activeLeaves.length >= 2,
-                isCKSwap: isCK,
-                swapAbsentTen: reliefInfo ? currentAbsentTen : undefined
-              });
-              coverCount[k]++;
-              accumulatedCoverCount[k]++;
-            }
-          } else if (isReplacement) {
-            const isManualSwap = !absentSet[actualAbsentKip];
-            extraRows.push({
-              ngay, ca: assignedShift, kipThay: k,
-              nguoiThay: timThay(k, chucDanh, staffData),
-              absentKip: actualAbsentKip, absentTen: currentAbsentTen, chucDanh,
-              relievedTen,
-              relievedKip,
-              isConflict: isConf, 
-              conflictNote: ckNote || (isConf ? noteConf : (isManualSwap || reliefInfo ? `${timThay(k, chucDanh, staffData)} trực thay ${relievedTen || currentAbsentTen} ca ${assignedShift}` : `△ Điều chỉnh hệ thống: ${timThay(k, chucDanh, staffData)} thay cho ${currentAbsentTen}`)),
-              isCKChain: isCK, isSwap: isManualSwap || !!reliefInfo, isOverlapDay: activeLeaves.length >= 2
-            });
-            coverCount[k]++;
-          }
-        }
-
-        if (assignedShift === 'C') {
-          if (!blockedNextK[tomorrowKey]) blockedNextK[tomorrowKey] = [];
-          if (blockedNextK[tomorrowKey].indexOf(k) === -1) blockedNextK[tomorrowKey].push(k);
-          
-          // Only add tomorrow to allDates if it's within the original leave range + 1 day
-          // AND the person is actually blocked from their natural shift tomorrow.
-          const maxLeaveEnd = leaves.length > 0 ? Math.max(...leaves.map(l => l.end.getTime())) : 0;
-          const maxDate = new Date(maxLeaveEnd + 86400000);
-          const naturalShiftTomorrow = xacDinhCa(tomorrow, k);
-          
-          if (!allDates[tomorrowKey] && tomorrow <= maxDate && naturalShiftTomorrow === 'K') {
-            allDates[tomorrowKey] = new Date(tomorrow);
-          }
-        }
-      }
-    }
-    
-    if (bestScore >= 10000 && bestScore < 1000000) hasConflict = true;
+  } else {
+    extraNoteBlock += wpara(
+      wrun(`-`, { size: 24 }),
+      { indent: { left: 400 } }
+    );
   }
+});
+  const note = wpara(
+    wrun('   Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều chỉnh kịp thời./.',
+      { italic: true, size: 24 }),
+    { spBefore: 120, spAfter: 60 }
+  );
 
-  return { results, extraRows, hasConflict, coverCount };
+  const footTbl = wtable([
+    wtr([
+      wtc({
+        w: HW, borders: false, content:
+          wpara(wrun('Nơi nhận:', { bold: true, italic: true, size: 24 }), { spBefore: 80 })
+          + wpara(wrun('- Các kíp (để t/hiện)', { italic: true, size: 22 }))
+          + wpara(wrun('- Lưu: VHIALY', { italic: true, size: 22 }))
+      }),
+      wtc({
+        w: CW - HW, borders: false, content:
+          wpara(wrun('QUẢN ĐỐC', { bold: true, size: 24 }), { align: 'center', spBefore: 80 })
+          + emptyP(500, 0) + emptyP(500, 0) + emptyP(500, 0)
+          + wpara(wrun(nguoiKy, { bold: true, size: 24 }), { align: 'center' })
+      })
+    ])
+  ], [HW, CW - HW]);
+
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    + '<w:body>'
+    + hdrTbl + soNgayTbl + title + mainTbl + extraNoteBlock + note + footTbl
+    + '<w:sectPr>'
+    + '<w:pgSz w:w="11906" w:h="16838"/>'
+    + '<w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="1080" w:header="720" w:footer="720" w:gutter="0"/>'
+    + '</w:sectPr>'
+    + '</w:body></w:document>';
+}
+
+export async function generateWordBlob(currentResult: any, config: any) {
+  if (!currentResult) return null;
+  
+  const docXml = buildDocXml(currentResult, config);
+
+  const CT = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+    + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+    + '<Default Extension="xml" ContentType="application/xml"/>'
+    + '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+    + '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+    + '</Types>';
+
+  const RELS = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+    + '</Relationships>';
+
+  const WRELS = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+    + '</Relationships>';
+
+  const STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    + '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+    + '<w:docDefaults><w:rPrDefault><w:rPr>'
+    + '<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>'
+    + '<w:sz w:val="24"/><w:szCs w:val="24"/>'
+    + '</w:rPr></w:rPrDefault></w:docDefaults>'
+    + '<w:style w:type="paragraph" w:default="1" w:styleId="Normal">'
+    + '<w:name w:val="Normal"/>'
+    + '</w:style>'
+    + '</w:styles>';
+
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', CT);
+  zip.file('_rels/.rels', RELS);
+  zip.file('word/_rels/document.xml.rels', WRELS);
+  zip.file('word/styles.xml', STYLES);
+  zip.file('word/document.xml', docXml);
+
+  return await zip.generateAsync({
+    type: 'blob',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    compression: 'DEFLATE'
+  });
+}
+
+export async function exportWord(currentResult: any, config: any) {
+  const blob = await generateWordBlob(currentResult, config);
+  if (!blob) return;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const fname = currentResult.allResults && currentResult.allResults.length > 1
+    ? 'Lich_truc_thay_' + currentResult.allResults.map((r: any) => r.ten.split(' ').pop()).join('_') + '.docx'
+    : 'Lich_truc_thay_' + currentResult.ten.replace(/\s+/g, '_') + '.docx';
+  a.download = fname;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }

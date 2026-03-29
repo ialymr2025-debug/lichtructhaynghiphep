@@ -18,8 +18,7 @@ function rpr(o: any = {}) {
 
 function wrun(text: string, opts: any = {}) {
   return '<w:r>' + rpr(opts) + '<w:t xml:space="preserve">' + xe(text) + '</w:t></w:r>';
-}
-
+} 
 function wpara(content: string, o: any = {}) {
   const align = o.align || 'left';
   const spB = o.spBefore || 0, spA = o.spAfter || 0;
@@ -404,7 +403,7 @@ validRoles.forEach(role => {
       wtc({
         w: CW - HW, borders: false, content:
           wpara(wrun('QUẢN ĐỐC', { bold: true, size: 24 }), { align: 'center', spBefore: 80 })
-          + emptyP(500, 0) + emptyP(500, 0) + emptyP(500, 0)
+          + emptyP(500, 0) + emptyP(500, 0) 
           + wpara(wrun(nguoiKy, { bold: true, size: 24 }), { align: 'center' })
       })
     ])

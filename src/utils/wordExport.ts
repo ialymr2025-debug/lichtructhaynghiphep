@@ -274,7 +274,7 @@ extraRows.forEach((ex: any) => {
         }));
         caRow.push(wtc({
           w: c1, vMerge: 'restart',
-          content: wpara(wrun(resCD, { size: 24 }), { align: 'center' })
+          content: wpara(wrun(resCD, { size: 22 }), { align: 'center' })
         }));
       } else {
         caRow.push(wtc({ w: c0, vMerge: 'cont', content: emptyP() }));
@@ -286,7 +286,7 @@ extraRows.forEach((ex: any) => {
         const it = grp[i];
         caRow.push(wtc({
           w: colW[i + 2], shading: it ? GRAY : '',
-          content: wpara(wrun(it ? it.ca + '-' + fmtVN(it.ngay).slice(0, 5) : '', { bold: true, size: 22 }), { align: 'center' })
+          content: wpara(wrun(it ? it.ca + '-' + fmtVN(it.ngay).slice(0, 5) : '', { bold: true, size: 24 }), { align: 'center' })
         }));
       }
 

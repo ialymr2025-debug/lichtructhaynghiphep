@@ -286,7 +286,7 @@ extraRows.forEach((ex: any) => {
         const it = grp[i];
         caRow.push(wtc({
           w: colW[i + 2], shading: it ? GRAY : '',
-          content: wpara(wrun(it ? it.ca + '-' + fmtVN(it.ngay).slice(0, 5) : '', { bold: true, size: 24 }), { align: 'center' })
+          content: wpara(wrun(it ? it.ca + '-' + fmtVN(it.ngay).slice(0, 5) : '', { bold: true, size: 22 }), { align: 'center' })
         }));
       }
 
@@ -388,7 +388,7 @@ validRoles.forEach(role => {
   }
 });
   const note = wpara(
-    wrun('   Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để kiểm tra và điều chỉnh kịp thời./.',
+    wrun('   Ghi chú: Các chức danh kiểm tra lại lịch trực của mình, nếu có gì vướng mắc phải báo lại PX để   kiểm tra và điều chỉnh kịp thời./.',
       { italic: true, size: 24 }),
     { spBefore: 120, spAfter: 60 }
   );

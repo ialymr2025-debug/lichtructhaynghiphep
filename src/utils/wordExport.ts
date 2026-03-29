@@ -274,7 +274,7 @@ extraRows.forEach((ex: any) => {
         }));
         caRow.push(wtc({
           w: c1, vMerge: 'restart',
-          content: wpara(wrun(resCD, { size: 22 }), { align: 'center' })
+          content: wpara(wrun(resCD, { size: 24 }), { align: 'center' })
         }));
       } else {
         caRow.push(wtc({ w: c0, vMerge: 'cont', content: emptyP() }));
@@ -324,7 +324,7 @@ extraRows.forEach((ex: any) => {
         const it = grp[i];
         tenRow.push(wtc({
           w: colW[i + 2],
-          content: it ? wpara(wrun(abbrev(it.nguoiThay), { size: 24 }), { align: 'center' }) : emptyP()
+          content: it ? wpara(wrun(abbrev(it.nguoiThay), { size: 22 }), { align: 'center' }) : emptyP()
         }));
       }
 

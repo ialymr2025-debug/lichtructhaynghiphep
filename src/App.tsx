@@ -1,7 +1,6 @@
-
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import mammoth from 'mammoth';
+import mammoth from 'mammoth/mammoth.browser';
 import { initializeApp } from 'firebase/app';
 import { 
   initializeFirestore, 

@@ -1,0 +1,56 @@
+{
+  "entities": {
+    "GoogleAuth": {
+      "title": "Google Auth Tokens",
+      "description": "Stores OAuth2 tokens for Google Sheets access",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "object",
+          "description": "The JSON tokens object from Google"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["tokens", "updatedAt"]
+    },
+    "Signature": {
+      "title": "Employee Signature",
+      "description": "Stores base64 signature image for an employee",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "data": { "type": "string", "description": "Base64 image data" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "data", "updatedAt"]
+    },
+    "AppConfig": {
+      "title": "Application Configuration",
+      "description": "Stores general app settings and staff list",
+      "type": "object",
+      "properties": {
+        "staffData": { "type": "string", "description": "JSON stringified staff list" },
+        "config": { "type": "object" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["staffData", "config", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/config/google_auth": {
+      "schema": "GoogleAuth",
+      "description": "The single document storing the shared Google authentication"
+    },
+    "/config/app_settings": {
+      "schema": "AppConfig",
+      "description": "Shared application settings and staff list"
+    },
+    "/signatures/{name}": {
+      "schema": "Signature",
+      "description": "Signatures for each employee"
+    }
+  }
+}

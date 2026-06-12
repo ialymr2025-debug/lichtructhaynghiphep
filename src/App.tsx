@@ -928,7 +928,7 @@ export default function App() {
       setConfirmModal({
         isOpen: true,
         title: "Ghi vào Bảng theo dõi phép năm?",
-        message: "Bạn có muốn ghi số ca trực nghỉ (tongcatrucphaithay) của các đồng chí nghỉ phép vào cột F và tìm tên ở cột B của sheet 'Số ngày phép' không?",
+        message: "Bạn có muốn ghi số ngày nghỉ phép vào bảng theo dõi phép năm không",
         confirmText: "Có, ghi bảng",
         cancelText: "Không, bỏ qua",
         onConfirm: () => {

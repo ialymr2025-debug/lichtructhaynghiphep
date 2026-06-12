@@ -1,1860 +1,1939 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import mammoth from 'mammoth/mammoth.browser';
-import { initializeApp } from 'firebase/app';
-import { 
-  initializeFirestore, 
-  collection, 
-  addDoc, 
-  onSnapshot, 
-  query, 
-  orderBy, 
-  serverTimestamp,
-  Timestamp,
-  doc,
-  getDocFromServer,
-  updateDoc,
-  arrayUnion,
-  deleteDoc,
-  where,
-  getDocs,
-  limit
-} from 'firebase/firestore';
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, setPersistence, browserLocalPersistence } from 'firebase/auth';
-import firebaseConfig from '../firebase-applet-config.json';
-import { 
-  PieChart, 
-  Pie, 
-  Cell, 
-  ResponsiveContainer, 
-  Tooltip 
-} from 'recharts';
-import { 
-  ExternalLink, 
-  Upload,
-  FileText,
-  CheckCircle2,
-  Eye,
-  Settings,
-  FileSearch,
-  ClipboardList,
-  Activity as ActivityIcon,
-  AlertTriangle,
-  RotateCcw,
-  Maximize2,
-  Download,
-  Info,
-  LayoutDashboard,
-  FolderArchive,
-  ChevronDown,
-  Calendar,
-  BarChart3,
-  Droplets,
-  Zap,
-  ShieldCheck,
-  TrendingUp,
-  RefreshCw,
-  Clock,
-  AlertCircle,
-  ChevronRight,
-  Trash2
-} from 'lucide-react';
-
-export enum DefectStatus {
-  PENDING = 'PENDING',
-  PROCESSING = 'PROCESSING',
-  COMPLETED = 'COMPLETED',
-  URGENT = 'URGENT'
-}
-
-export interface ChartData {
-  name: string;
-  detected: number;
-  processed: number;
-  processing: number;
-  pending: number;
-}
-import StatCard from './components/StatCard';
-import { DailyLoadChart, MonthlyProductionChart } from './components/ProductionChart';
-import { DashboardCharts } from './components/DashboardCharts';
-import { WastewaterChart } from './components/WastewaterChart';
-import { ReportModal } from './components/ReportModal';
-import { TargetModal } from './components/TargetModal';
-import { BulkTargetModal } from './components/BulkTargetModal';
-import { AuditCharts } from './components/AuditCharts';
-import { AdminMonitor } from './components/AdminMonitor';
-import { EvnLogoWidget } from './components/EvnLogoWidget';
-import { generateOperationReport } from './services/exportService';
-import { INITIAL_TARGETS, INITIAL_REPORTS, REPORTERS } from './constants';
-import { Target, Report, TargetStatus } from './types';
-import { cn } from './lib/utils';
-import * as htmlToImage from 'html-to-image';
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-export const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-}, firebaseConfig.firestoreDatabaseId);
-const auth = getAuth(app);
-const googleProvider = new GoogleAuthProvider();
-googleProvider.addScope('https://www.googleapis.com/auth/drive.file');
-
-// Constants
-const SHEET_ID = '1EVA37o8kSgi3Z86hwUQN5uyBtVwERDo3REO0xMtMqE0';
-const CATEGORIES = ['QUẢN LÝ HÀNH CHÍNH', 'THIẾT BỊ CÔNG TRÌNH', 'AN TOÀN VỆ SINH LAO ĐỘNG', 'TPM, KAIZEN'];
-
-const DRIVE_FOLDERS = {
-  GENERAL: '1zEIi5d40X3jIYAHIAD0r8JSzZV69cILA',
-  KPI: '1sPbWy_9n0OgtIEP_gHf7i07aTGe5bWno',
-  LHC: '1SWAB8E6S1SDUcFhDk0XwLtcBpG-GS7Xy',
-  SAFETY: '1kJpQJykLqoPflAemE6I-CEU3VcBntEqG',
-  ECONOMY: '125pphQ43ycvbZOWqwXH0NkiYPIXfqrm9'
-};
-
-// Type definitions
-interface UploadedFile {
-  id: string;
-  name: string;
-  type: string;
-  size: string;
-  url: string;
-  date: string;
-  originalFile?: File;
-  uploaderName?: string;
-  uploaderId?: string;
-  createdAt?: any;
-  driveId?: string;
-  category?: string;
-  readBy?: string[];
-}
-
-interface ActivityLog {
-  id: string;
-  userId: string;
-  userEmail: string;
-  userName: string;
-  action: string;
-  details: string;
-  timestamp: any;
-}
-
-const ADMIN_EMAILS = ['hoaibaole2k00@gmail.com', 'hoaibaole123@gmail.com', 'hungvu059@gmail.com'];
-
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string | null;
-    email?: string | null;
-    emailVerified?: boolean | null;
-    isAnonymous?: boolean | null;
-  }
-}
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-    },
-    operationType,
-    path
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import mammoth from 'mammoth';
+import { DEFAULT_STAFF, SHIFTS } from './constants';
+import { fmtVN, fmtIn, dayN, timNghi, timThay, abbrev, xacDinhCa } from './utils/shiftHelpers';
+import { buildMultiLeaveResults, Leave, ResultItem } from './utils/Quytacxacdinhcatructhay';
+import { exportWord, generateWordBlob, exportSwapDoc, generateSwapBlob, exportLeaveRequestDoc, generateLeaveRequestBlob, exportAllDocsZip } from './utils/wordExport';
+import { renderAsync } from 'docx-preview';
+import SignatureManager from './components/SignatureManager';
+import { Trash2 } from 'lucide-react';
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [mainView, setMainView] = useState<'portal' | 'dashboard' | 'repository' | 'admin'>('portal');
-  const [activeTab, setActiveTab] = useState<'chutri' | 'phoihoap'>('phoihoap');
-  const [hasLoggedAccess, setHasLoggedAccess] = useState(false);
-
-  const logActivity = useCallback(async (action: string, details: string) => {
-    if (!auth.currentUser) return;
-    const path = 'activity_logs';
-    try {
-      await addDoc(collection(db, path), {
-        userId: auth.currentUser.uid,
-        userEmail: auth.currentUser.email,
-        userName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0],
-        action,
-        details,
-        timestamp: serverTimestamp()
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
+  const [staffData, setStaffData] = useState<string[][]>(() => {
+    const saved = localStorage.getItem('sd');
+    const ver = localStorage.getItem('sv');
+    if (ver !== 'v4') {
+      localStorage.removeItem('sd');
+      localStorage.setItem('sv', 'v4');
+      return DEFAULT_STAFF;
     }
-  }, []);
-
-  // Tự động ghi nhận hoạt động truy cập khi khôi phục phiên đăng nhập (lưu trạng thái)
-  useEffect(() => {
-    if (user && !hasLoggedAccess) {
-      setHasLoggedAccess(true);
-      logActivity('Truy cập', 'Truy cập ứng dụng (Khôi phục phiên đăng nhập)');
-    }
-  }, [user, hasLoggedAccess, logActivity]);
-
-  const isAdmin = useMemo(() => user && ADMIN_EMAILS.includes(user.email || ''), [user]);
-  const [portalTab, setPortalTab] = useState<'kt' | 'qt' | 'at'>('kt');
-  const [openAcc, setOpenAcc] = useState<number | null>(null);
-  const [openSub, setOpenSub] = useState<string | null>(null);
-  const [dynamicPortalItems, setDynamicPortalItems] = useState<any[]>([]);
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
-  const [uploadCategory, setUploadCategory] = useState<'GENERAL' | 'KPI' | 'LHC' | 'SAFETY' | 'ECONOMY'>('GENERAL');
-  const [selectedFile, setSelectedFile] = useState<UploadedFile | null>(null);
-  const [notification, setNotification] = useState<{message: string, type: 'success' | 'error'} | null>(null);
-  const [fileToDelete, setFileToDelete] = useState<{id: string, name: string} | null>(null);
-  const [wordContent, setWordContent] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isInitialLoad, setIsInitialLoad] = useState(true);
-  const [stats, setStats] = useState({ total: 0, completed: 0, pending: 0, notStarted: 0 });
-  
-  // Dashboard Metrics State
-  const [chartData, setChartData] = useState<ChartData[]>(
-    CATEGORIES.map(cat => ({ name: cat, detected: 0, processed: 0, processing: 0, pending: 0 }))
-  );
-  const [recentActivities, setRecentActivities] = useState<any[]>([]);
-
-  const fetchDashboardData = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const response = await fetch('/api/dashboard-summary');
-      if (!response.ok) throw new Error('Failed to fetch dashboard summary');
-      
-      const results = await response.json();
-      
-      let combinedActivities: any[] = [];
-      let totalCount = 0;
-      let completedCount = 0;
-      let processingCount = 0;
-      let notStartedCount = 0;
-
-      results.forEach((res: any) => {
-        if (res.error) return;
-        
-        totalCount += res.detected || 0;
-        completedCount += res.processed || 0;
-        processingCount += res.processing || 0;
-        notStartedCount += res.pending || 0;
-        
-        if (res.activities) {
-          combinedActivities = [...combinedActivities, ...res.activities];
-        }
-      });
-
-      setChartData(results.map((r: any) => ({
-        name: r.name,
-        detected: r.detected || 0,
-        processed: r.processed || 0,
-        processing: r.processing || 0,
-        pending: r.pending || 0
-      })));
-
-      const parseDateObj = (val: any) => {
-        if (!val) return null;
-        const str = String(val);
-        if (str.startsWith('Date(')) {
-          const p = str.match(/\d+/g);
-          if (p) return new Date(Number(p[0]), Number(p[1]), Number(p[2]));
-        }
-        const ts = Date.parse(str);
-        return isNaN(ts) ? null : new Date(ts);
-      };
-
-      setRecentActivities(combinedActivities.sort((a, b) => {
-        const dateA = parseDateObj(a.rawTime)?.getTime() || 0;
-        const dateB = parseDateObj(b.rawTime)?.getTime() || 0;
-        return dateB - dateA;
-      }).slice(0, 6));
-
-      setStats({ 
-        total: totalCount, 
-        completed: completedCount, 
-        pending: processingCount, 
-        notStarted: notStartedCount 
-      });
-    } catch (error) {
-      console.error('Failed to fetch dashboard data:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchDashboardData();
-  }, [fetchDashboardData]);
-
-  const onStatClick = (name: string, type: string) => {
-    console.log(`Stat clicked: ${name} - ${type}`);
-  };
-
-  const onActivityClick = (category: string, row: number) => {
-    console.log(`Activity clicked: ${category} - Row ${row}`);
-  };
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Dashboard Module State
-  const [manualTargets, setManualTargets] = useState<Target[]>(INITIAL_TARGETS);
-  const [reports, setReports] = useState<Report[]>(INITIAL_REPORTS);
-  const [googleTargets, setGoogleTargets] = useState<Target[]>([]);
-  const [isLoadingTargets, setIsLoadingTargets] = useState(false);
-  const [dashboardSubTab, setDashboardSubTab] = useState('dashboard');
-  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
-  const [isTargetModalOpen, setIsTargetModalOpen] = useState(false);
-  const [isBulkTargetModalOpen, setIsBulkTargetModalOpen] = useState(false);
-  const [editingTarget, setEditingTarget] = useState<Target | null>(null);
-  const [isExporting, setIsExporting] = useState(false);
-  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
-  const [passwordValue, setPasswordValue] = useState('');
-  const [pendingAction, setPendingAction] = useState<{ type: 'save' | 'delete', data: any } | null>(null);
-
-  useEffect(() => {
-    const fetchGoogleTargets = async () => {
-      setIsLoadingTargets(true);
+    if (saved) {
       try {
-        const resp = await fetch('/api/google-targets');
-        if (resp.ok) {
-          const data = await resp.json();
-          setGoogleTargets(data);
-        }
-      } catch (err) {
-        console.error('Failed to fetch google targets:', err);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {
+        console.error("Failed to parse local staffData", e);
+      }
+    }
+    return DEFAULT_STAFF;
+  });
+
+  const [ngayBatDau, setNgayBatDau] = useState(() => fmtIn(new Date()));
+  const [ngayKetThuc, setNgayKetThuc] = useState(() => {
+    const next = new Date();
+    next.setDate(next.getDate() + 7);
+    return fmtIn(next);
+  });
+  const [chucDanh, setChucDanh] = useState('');
+  const [kipNghi, setKipNghi] = useState('');
+  const [additionalLeaves, setAdditionalLeaves] = useState<{ kip: string, start: string, end: string, chucDanh: string }[]>([]);
+  const [showStaff, setShowStaff] = useState(false);
+  const [alert, setAlert] = useState<string | null>(null);
+  const [currentResult, setCurrentResult] = useState<any>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewBlob, setPreviewBlob] = useState<Blob | null>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const [isParsing, setIsParsing] = useState(false);
+  const [config, setConfig] = useState({
+    soVanBan: '',
+    ngayKy: '',
+    nguoiKy: 'Nguyễn Văn Nghị'
+  });
+
+  const [isGoogleAuth, setIsGoogleAuth] = useState(false);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [isUpdatingSheets, setIsUpdatingSheets] = useState(false);
+  const [signatures, setSignatures] = useState<Record<string, string>>({});
+  const [showSignatureManager, setShowSignatureManager] = useState(false);
+  const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
+
+  // Manual Swap State
+  const [swapData, setSwapData] = useState({
+    date1: fmtIn(new Date()),
+    date2: fmtIn(new Date()),
+    person1: '',
+    person2: '',
+    shift1: 'N',
+    shift2: 'K'
+  });
+  const [isPreviewingSwap, setIsPreviewingSwap] = useState(false);
+  const [swapChucDanh, setSwapChucDanh] = useState(staffData[0]?.[0] || '');
+  const [leaveData, setLeaveData] = useState({
+    name: '',
+    birthYear: '1980',
+    chucDanh: staffData[0]?.[0] || '',
+    kip: '1',
+    startDate: fmtIn(new Date()),
+    endDate: fmtIn(new Date()),
+    reason: 'Giải quyết việc riêng gia đình',
+    phone: '',
+    leaveYear: String(new Date().getFullYear()),
+    location: 'Gia Lai'
+  });
+  const [isPreviewingLeave, setIsPreviewingLeave] = useState(false);
+
+  // Google Sheets Leave Queues States
+  const [waitingLeaves, setWaitingLeaves] = useState<any[]>([]);
+  const [isLoadingWaitingLeaves, setIsLoadingWaitingLeaves] = useState(false);
+  const [selectedWaitingLeaveIds, setSelectedWaitingLeaveIds] = useState<string[]>([]);
+  const [isSavingLeaveToSheets, setIsSavingLeaveToSheets] = useState(false);
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    onCancel?: () => void;
+    confirmText?: string;
+    cancelText?: string;
+    isDanger?: boolean;
+    requirePassword?: boolean;
+  } | null>(null);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [activeTab, setActiveTab] = useState<'schedule' | 'leave' | 'swap'>('schedule');
+
+  const closeConfirmModal = () => {
+    setConfirmModal(null);
+    setConfirmPassword("");
+    setPasswordError("");
+  };
+
+  const handleConfirmSubmit = () => {
+    if (!confirmModal) return;
+    if (confirmModal.requirePassword) {
+      if (confirmPassword !== '1234') {
+        setPasswordError("Mật khẩu không chính xác! .");
+        return;
+      }
+    }
+    confirmModal.onConfirm();
+    closeConfirmModal();
+  };
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      setLoadingAuth(true);
+      try {
+        const res = await fetch('/api/auth/status');
+        const data = await res.json();
+        setIsGoogleAuth(data.authenticated);
+      } catch (e) {
+        console.error("Auth check failed", e);
       } finally {
-        setIsLoadingTargets(false);
+        setLoadingAuth(false);
       }
     };
-    fetchGoogleTargets();
-  }, []);
+    checkAuth();
 
-  const allTargets = useMemo(() => {
-    const googleIds = new Set(googleTargets.map(t => t.id));
-    const filteredInitial = manualTargets.filter(t => !googleIds.has(t.id));
-    return [...filteredInitial, ...googleTargets];
-  }, [manualTargets, googleTargets]);
-
-  const handleDownloadReport = async () => {
-    setIsExporting(true);
-    try {
-      let chartImages: { pie: string; bar: string } | undefined;
-      const pieEl = document.getElementById(`chart-pie-yearly`);
-      const barEl = document.getElementById(`chart-bar-plants`);
-      if (pieEl && barEl) {
-        const pieImg = await htmlToImage.toPng(pieEl, { quality: 1, backgroundColor: '#ffffff' });
-        const barImg = await htmlToImage.toPng(barEl, { quality: 1, backgroundColor: '#ffffff' });
-        chartImages = { pie: pieImg, bar: barImg };
+    const handleMessage = (e: MessageEvent) => {
+      if (e.data?.type === 'OAUTH_AUTH_SUCCESS') {
+        setIsGoogleAuth(true);
+        setAlert('✅ Kết nối Google thành công!');
       }
-      await generateOperationReport(allTargets, reports, chartImages);
-    } catch (error) {
-      console.error('Export failed:', error);
-    } finally {
-      setIsExporting(false);
-    }
-  };
+    };
+    window.addEventListener('message', handleMessage);
 
-  const handleSaveReport = (newReportData: Omit<Report, 'id' | 'date'>) => {
-    const today = new Date();
-    const date = `${String(today.getDate()).padStart(2, '0')}/${String(today.getMonth() + 1).padStart(2, '0')}/${today.getFullYear()}`;
-    const newReport: Report = { ...newReportData, id: `r-${Date.now()}`, date };
-    setReports([newReport, ...reports]);
-  };
-
-  const handleConfirmAction = () => {
-    if (passwordValue === '123456') {
-      if (pendingAction?.type === 'save') {
-        const targetData = pendingAction.data;
-        if (editingTarget) {
-          setManualTargets(manualTargets.map(t => t.id === editingTarget.id ? { ...targetData, id: t.id } : t));
-        } else {
-          setManualTargets([{ ...targetData, id: `t-${Date.now()}` }, ...manualTargets]);
-        }
-        setIsTargetModalOpen(false);
-        setEditingTarget(null);
-      } else if (pendingAction?.type === 'delete') {
-        setManualTargets(manualTargets.filter(t => t.id !== pendingAction.data));
-      }
-      setIsPasswordModalOpen(false);
-      setPasswordValue('');
-      setPendingAction(null);
-    } else { alert('Sai mật khẩu!'); }
-  };
-
-  const renderDashboardModule = () => {
-    return (
-      <div className="space-y-12">
-        <div className="flex bg-white p-2 rounded-[28px] border border-slate-100 shadow-sm w-fit">
-           {[
-             { id: 'dashboard', label: 'Biểu đồ vận hành' }
-           ].map(tab => (
-             <button 
-               key={tab.id}
-               onClick={() => setDashboardSubTab(tab.id)}
-               className={cn(
-                 "px-6 py-3 rounded-[20px] text-xs font-black uppercase tracking-widest transition-all",
-                 dashboardSubTab === tab.id ? "bg-blue-600 text-white shadow-lg shadow-blue-100" : "text-slate-400 hover:text-slate-600"
-               )}
-             >
-               {tab.label}
-             </button>
-           ))}
-        </div>
-
-        <AnimatePresence mode="wait">
-          {dashboardSubTab === 'dashboard' && (
-            <motion.div key="db-charts" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-12">
-               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                <div>
-                  <h2 className="text-3xl font-black text-gray-900 tracking-tight flex items-center gap-3">
-                    <div className="p-2 bg-blue-600 rounded-2xl text-white shadow-lg shadow-blue-600/20">
-                      <BarChart3 size={24} />
-                    </div>
-                    BIỂU ĐỒ DỮ LIỆU VẬN HÀNH
-                  </h2>
-                  <p className="text-sm text-gray-500 font-medium mt-2 flex items-center gap-2">
-                    <RefreshCw size={14} className="text-blue-500" />
-                    Cập nhật thời thực: {new Date().toLocaleTimeString('vi-VN')} · {new Date().toLocaleDateString('vi-VN')}
-                  </p>
-                </div>
-                
-                
-              </div>
-              <DashboardCharts />
-              
-              <div className="flex items-center gap-3 mb-6">
-                <div className="p-2.5 bg-blue-100 dark:bg-blue-900/30 rounded-2xl text-blue-600"><ActivityIcon size={18} /></div>
-                <h3 className="text-xl font-black text-slate-900 tracking-tight uppercase">TỒN TẠI, ĐIỂM KHÔNG PHÙ HỢP</h3>
-              </div>
-              
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-100 dark:border-slate-800 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Tổng phát hiện</p>
-                  <p className="text-3xl font-black text-slate-900 dark:text-white leading-none">{stats.total}</p>
-                </div>
-                <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-100 dark:border-slate-800 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-emerald-500 mb-2">Đã hoàn thành</p>
-                  <p className="text-3xl font-black text-emerald-600 leading-none">{stats.completed}</p>
-                </div>
-                <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-100 dark:border-slate-800 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-amber-500 mb-2">Đang xử lý</p>
-                  <p className="text-3xl font-black text-amber-600 leading-none">{stats.pending}</p>
-                </div>
-                <div className="bg-white dark:bg-slate-800 p-6 rounded-[2rem] border border-slate-100 dark:border-slate-800 shadow-sm">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-rose-500 mb-2">Chưa xử lý</p>
-                  <p className="text-3xl font-black text-rose-600 leading-none">{stats.notStarted}</p>
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-slate-800 p-8 rounded-[2.5rem] shadow-2xl border border-slate-100 dark:border-slate-800 mb-6">
-                <div className="flex items-center justify-between mb-8">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2.5 bg-blue-100 dark:bg-blue-900/30 rounded-2xl text-blue-600"><ActivityIcon size={18} /></div>
-                    
-                    <h2 className="text-sm font-black uppercase tracking-widest text-slate-700 dark:text-slate-300">Biểu đồ hoạt động</h2>
-                  </div>
-                  <button onClick={fetchDashboardData} className="p-2 text-slate-400 hover:text-blue-500 transition-colors">
-                    <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
-                  {isLoading ? (
-                    Array(4).fill(0).map((_, i) => (
-                      <div key={i} className="h-48 bg-slate-50 dark:bg-slate-900/50 rounded-3xl animate-pulse" />
-                    ))
-                  ) : (
-                    chartData.map((entry, idx) => {
-                      const completed = entry.processed;
-                      const totalStarted = entry.processing;
-                      const pending = entry.pending;
-                      const inProgressOnly = Math.max(0, entry.detected - completed - pending);
-                      
-                      const data = [
-                        { name: 'Hoàn thành', value: completed, color: '#10b981', grad: `gradGreen-${idx}` },
-                        { name: 'Đang xử lý', value: inProgressOnly, color: '#f59e0b', grad: `gradAmber-${idx}` },
-                        { name: 'Chưa xử lý', value: pending, color: '#ef4444', grad: `gradRed-${idx}` }
-                      ].filter(d => d.value > 0);
-
-                      return (
-                        <div key={idx} className="flex flex-col items-center group">
-                          <div className="h-60 w-full relative bg-slate-900/5 dark:bg-slate-900/20 rounded-[2.5rem] overflow-hidden shadow-inner border border-slate-200/50 dark:border-slate-700/30 transition-all hover:shadow-2xl hover:scale-[1.02] duration-500" id={`activity-chart-${idx}`}>
-                            <div className="absolute inset-0 bg-gradient-to-br from-white/40 to-transparent dark:from-white/5 pointer-events-none" />
-                            
-                            {/* Corner Buttons */}
-                            <button 
-                              onClick={() => onStatClick(entry.name, 'processed')}
-                              className="absolute top-4 left-4 z-20 flex flex-col items-center p-3.5 bg-emerald-50/90 dark:bg-emerald-900/50 backdrop-blur-md rounded-[1.5rem] border border-emerald-100 dark:border-emerald-800/50 hover:scale-110 active:scale-95 transition-all shadow-xl min-w-[70px]"
-                            >
-                              <span className="text-[9px] font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-widest mb-1">Hoàn thành</span>
-                              <span className="text-lg font-black text-emerald-700 dark:text-emerald-300 leading-none">{completed}</span>
-                            </button>
-
-                            <button 
-                              onClick={() => onStatClick(entry.name, 'nvvh')}
-                              className="absolute top-4 right-4 z-20 flex flex-col items-center p-3.5 bg-amber-50/90 dark:bg-amber-900/50 backdrop-blur-md rounded-[1.5rem] border border-amber-100 dark:border-amber-800/50 hover:scale-110 active:scale-95 transition-all shadow-xl min-w-[70px]"
-                            >
-                              <span className="text-[9px] font-black text-amber-600 dark:text-amber-400 uppercase tracking-widest mb-1">Đang xử lý</span>
-                              <span className="text-lg font-black text-amber-700 dark:text-amber-300 leading-none">{totalStarted}</span>
-                            </button>
-
-                            <button 
-                              onClick={() => onStatClick(entry.name, 'pending')}
-                              className="absolute bottom-4 left-4 z-20 flex flex-col items-center p-3.5 bg-rose-50/90 dark:bg-rose-900/50 backdrop-blur-md rounded-[1.5rem] border border-rose-100 dark:border-rose-800/50 hover:scale-110 active:scale-95 transition-all shadow-xl min-w-[70px]"
-                            >
-                              <span className="text-[9px] font-black text-rose-600 dark:text-rose-400 uppercase tracking-widest mb-1">Chưa xử lý</span>
-                              <span className="text-lg font-black text-rose-700 dark:text-rose-300 leading-none">{pending}</span>
-                            </button>
-
-                            <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
-                              <PieChart>
-                                <defs>
-                                  <linearGradient id={`gradGreen-${idx}`} x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="0%" stopColor="#10b981" />
-                                    <stop offset="100%" stopColor="#059669" />
-                                  </linearGradient>
-                                  <linearGradient id={`gradAmber-${idx}`} x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="0%" stopColor="#f59e0b" />
-                                    <stop offset="100%" stopColor="#d97706" />
-                                  </linearGradient>
-                                  <linearGradient id={`gradRed-${idx}`} x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="0%" stopColor="#ef4444" />
-                                    <stop offset="100%" stopColor="#b91c1c" />
-                                  </linearGradient>
-                                  <filter id="vividShadow" height="150%">
-                                    <feGaussianBlur in="SourceAlpha" stdDeviation="3" />
-                                    <feOffset dx="0" dy="10" result="offsetblur" />
-                                    <feComponentTransfer>
-                                      <feFuncA type="linear" slope="0.5" />
-                                    </feComponentTransfer>
-                                    <feMerge>
-                                      <feMergeNode />
-                                      <feMergeNode in="SourceGraphic" />
-                                    </feMerge>
-                                  </filter>
-                                </defs>
-                                <Pie
-                                  data={data}
-                                  cx="50%"
-                                  cy="50%"
-                                  startAngle={90}
-                                  endAngle={-270}
-                                  innerRadius={35}
-                                  outerRadius={75}
-                                  paddingAngle={4}
-                                  dataKey="value"
-                                  stroke="none"
-                                  filter="url(#vividShadow)"
-                                  animationDuration={1800}
-                                  labelLine={false}
-                                  label={({ cx, cy, midAngle, innerRadius, outerRadius, percent }) => {
-                                    const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
-                                    const x = cx + radius * Math.cos(-midAngle * (Math.PI / 180));
-                                    const y = cy + radius * Math.sin(-midAngle * (Math.PI / 180));
-                                    if (percent < 0.1) return null;
-                                    return (
-                                      <text 
-                                        x={x} 
-                                        y={y} 
-                                        fill="white" 
-                                        textAnchor="middle" 
-                                        dominantBaseline="central" 
-                                        className="text-[11px] font-black drop-shadow-lg"
-                                      >
-                                        {(percent * 100).toFixed(0)}%
-                                      </text>
-                                    );
-                                  }}
-                                >
-                                  {data.map((entry, index) => (
-                                    <Cell 
-                                      key={`cell-${index}`} 
-                                      fill={`url(#${entry.grad})`}
-                                      className="transition-all duration-500 hover:opacity-80 cursor-pointer"
-                                    />
-                                  ))}
-                                </Pie>
-                                <Tooltip 
-                                  content={({ active, payload }) => {
-                                    if (active && payload && payload.length) {
-                                      const d = payload[0].payload;
-                                      return (
-                                        <div className="bg-white dark:bg-slate-900 p-3 rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-800 animate-in fade-in zoom-in duration-200">
-                                          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">{d.name}</p>
-                                          <p className="text-lg font-black text-slate-900 dark:text-white">{d.value}</p>
-                                        </div>
-                                      );
-                                    }
-                                    return null;
-                                  }}
-                                />
-                              </PieChart>
-                            </ResponsiveContainer>
-                            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
-                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter leading-none">Tổng</p>
-                              <p className="text-lg font-black text-slate-700 dark:text-slate-300">{entry.detected}</p>
-                            </div>
-                          </div>
-                          <div className="mt-5 text-center w-full">
-                            <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-800 dark:text-slate-200 mb-1">{entry.name}</p>
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-slate-800 p-6 rounded-[2.5rem] shadow-2xl border border-slate-100 dark:border-slate-800 mb-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="p-2.5 bg-blue-100 dark:bg-blue-900/30 rounded-2xl text-blue-600"><Clock size={18} /></div>
-                  <h2 className="text-sm font-black uppercase tracking-widest text-slate-700 dark:text-slate-300">Hoạt động mới nhất</h2>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {isLoading ? (
-                    Array(4).fill(0).map((_, i) => (
-                      <div key={i} className="h-20 bg-slate-50 dark:bg-slate-900/50 rounded-3xl animate-pulse" />
-                    ))
-                  ) : recentActivities.length > 0 ? (
-                    recentActivities.map((act, idx) => (
-                      <div 
-                        key={idx} 
-                        onClick={() => onActivityClick(act.category, act.row)}
-                        className="flex items-center gap-4 p-4 bg-slate-50 dark:bg-slate-900/40 rounded-3xl border border-slate-100 dark:border-slate-800/50 group transition-all hover:shadow-lg cursor-pointer active:scale-[0.98]"
-                      >
-                        <div className={`shrink-0 w-12 h-12 rounded-[1.2rem] flex items-center justify-center shadow-sm ${act.isDone ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>
-                          {act.isDone ? <CheckCircle2 size={20} /> : <AlertCircle size={20} />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h3 className="text-[16px] font-black text-slate-800 dark:text-slate-200 truncate leading-tight mb-1 uppercase tracking-tighter">
-                            {act.title}
-                          </h3>
-                          <p className="text-[15px] text-slate-500 dark:text-slate-400 truncate mb-1">
-                            📍 {act.location}
-                          </p>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[15px] font-black text-blue-500 uppercase tracking-widest bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded-md">
-                        {act.category.split(',')[0]}
-                      </span>
-                      <span className="text-[15px] font-bold text-slate-400 flex items-center gap-1">
-                        <Clock size={10} /> {act.time}
-                      </span>
-                    </div>
-                        </div>
-                        <ChevronRight size={14} className="text-slate-300 group-hover:translate-x-1 transition-transform" />
-                      </div>
-                    ))
-                  ) : (
-                    <div className="col-span-full py-12 text-center opacity-30 flex flex-col items-center">
-                      <ActivityIcon size={40} strokeWidth={1} />
-                      <p className="text-[10px] uppercase font-black tracking-widest mt-3">Hiện chưa có hoạt động</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <AuditCharts />
-                <WastewaterChart />
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <ReportModal 
-          isOpen={isReportModalOpen} 
-          onClose={() => setIsReportModalOpen(false)} 
-          targets={allTargets}
-          onSave={handleSaveReport}
-        />
-        <TargetModal
-          isOpen={isTargetModalOpen}
-          onClose={() => { setIsTargetModalOpen(false); setEditingTarget(null); }}
-          onSave={(data) => { setPendingAction({ type: 'save', data }); setIsPasswordModalOpen(true); }}
-          editingTarget={editingTarget}
-        />
-        <BulkTargetModal
-          isOpen={isBulkTargetModalOpen}
-          onClose={() => setIsBulkTargetModalOpen(false)}
-          onSave={(data) => {
-            const newTargets = data.map(t => ({ ...t, id: `t-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` }));
-            setManualTargets([...newTargets, ...manualTargets]);
-            setIsBulkTargetModalOpen(false);
-          }}
-        />
-        {isPasswordModalOpen && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-            <div className="w-full max-w-sm bg-white rounded-3xl p-8 text-center shadow-2xl">
-              <h3 className="text-lg font-black uppercase mb-6">Xác thực quyền hạn</h3>
-              <input 
-                type="password" autoFocus placeholder="Mật khẩu (123456)" 
-                value={passwordValue} onChange={(e) => setPasswordValue(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleConfirmAction()}
-                className="w-full h-12 px-4 rounded-xl border border-slate-200 bg-slate-50 text-center text-sm font-black mb-6"
-              />
-              <div className="grid grid-cols-2 gap-4">
-                <button onClick={() => setIsPasswordModalOpen(false)} className="py-3 bg-slate-100 rounded-xl text-xs font-black uppercase text-slate-500">Hủy</button>
-                <button onClick={handleConfirmAction} className="py-3 bg-blue-600 rounded-xl text-xs font-black uppercase text-white">Xác nhận</button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  // Connection Test
-  useEffect(() => {
-    async function testConnection() {
+    // Fetch cloud settings on mount
+    const fetchSettings = async () => {
       try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error) {
-        if(error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
+        // Fetch app settings
+        const res = await fetch('/api/app-settings');
+        const data = await res.json();
+        if (data.staffData && Array.isArray(data.staffData)) {
+          setStaffData(data.staffData);
+          localStorage.setItem('sd', JSON.stringify(data.staffData));
         }
+        if (data.config) {
+          setConfig(data.config);
+        }
+
+        // Fetch signatures
+        const sigRes = await fetch('/api/signatures');
+        const sigData = await sigRes.json();
+        setSignatures(sigData);
+
+        setIsSettingsLoaded(true);
+      } catch (e) {
+        console.error("Failed to fetch app settings", e);
+        setIsSettingsLoaded(true);
       }
-    }
-    testConnection();
+    };
+    fetchSettings();
+
+    return () => window.removeEventListener('message', handleMessage);
   }, []);
 
-  // Auth Listener
+  // Save settings to cloud whenever they change (debounced)
   useEffect(() => {
-    try {
-      setPersistence(auth, browserLocalPersistence);
-    } catch (e) {
-      console.error("Persistence error:", e);
-    }
-    return onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setAuthReady(true);
-    });
-  }, []);
-  
-  useEffect(() => {
-    if (!user) return;
-    const q = query(collection(db, 'portal_items'), orderBy('order', 'asc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setDynamicPortalItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (error) => {
-      console.error("Error fetching portal items:", error);
-    });
-    return () => unsubscribe();
-  }, [user]);
-
-  // Real-time Firestore Listener
-  useEffect(() => {
-    if (!user) return;
-
-    const q = query(collection(db, 'files'), orderBy('createdAt', 'desc'));
+    if (!isSettingsLoaded) return;
     
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const files: UploadedFile[] = [];
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        files.push({
-          id: doc.id,
-          ...data,
-          date: data.createdAt ? (data.createdAt as Timestamp).toDate().toLocaleDateString('vi-VN') : data.date
-        } as UploadedFile);
-      });
+    const saveSettings = async () => {
+      try {
+        await fetch('/api/app-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ staffData, config })
+        });
+      } catch (e) {
+        console.error("Failed to save app settings", e);
+      }
+    };
+    
+    const timer = setTimeout(saveSettings, 3000);
+    return () => clearTimeout(timer);
+  }, [staffData, config, isSettingsLoaded]);
 
-      setUploadedFiles(files);
-      
-      // Select first file if none selected or if it's the initial load
-      if (files.length > 0 && isInitialLoad) {
-        setSelectedFile(files[0]);
-        setIsInitialLoad(false);
+  const fetchWaitingLeaves = useCallback(async () => {
+    if (!isGoogleAuth) return;
+    setIsLoadingWaitingLeaves(true);
+    try {
+      const res = await fetch('/api/sheets/leave-requests');
+      if (res.ok) {
+        const data = await res.json();
+        const waiting = data.filter((item: any) => item.status === 'Chờ phân ca');
+        setWaitingLeaves(waiting);
+        // Clear selected if they no longer exist in waiting
+        setSelectedWaitingLeaveIds(prev => prev.filter(id => waiting.some((w: any) => w.id === id)));
+      } else {
+        if (res.status === 401) {
+          setIsGoogleAuth(false);
+          setAlert("⚠ Phiên kết nối Google Sheets đã hết hạn. Vui lòng kết nối lại tài khoản.");
+        }
+        console.error("Failed to fetch leave requests from Sheets");
+      }
+    } catch (e) {
+      console.error("Error fetching live leaves request", e);
+    } finally {
+      setIsLoadingWaitingLeaves(false);
+    }
+  }, [isGoogleAuth]);
+
+  useEffect(() => {
+    if (isGoogleAuth) {
+      fetchWaitingLeaves();
+    } else {
+      setWaitingLeaves([]);
+      setSelectedWaitingLeaveIds([]);
+    }
+  }, [isGoogleAuth, fetchWaitingLeaves]);
+
+  const handleConnectGoogle = () => {
+    const width = 500, height = 600;
+    const left = (window.innerWidth - width) / 2;
+    const top = (window.innerHeight - height) / 2;
+    window.open('/api/auth/google', 'google-auth', `width=${width},height=${height},left=${left},top=${top}`);
+  };
+
+  const getSheetsUpdates = (resObj: any) => {
+    if (!resObj) return [];
+    const updateMap: Record<string, string> = {}; // key: "name|date"
+
+    // 1. Process all leaves (Absent people)
+    resObj.allResults.forEach((res: any) => {
+      const start = new Date(res.start);
+      const end = new Date(res.end);
+      let d = new Date(start);
+      while (d <= end) {
+        const dateStr = fmtIn(d);
+        const originalShift = xacDinhCa(d, res.kip);
+        // Only change N, C, K to F. Keep O as O.
+        const finalShift = (originalShift === 'N' || originalShift === 'C' || originalShift === 'K') ? 'F' : originalShift;
+        
+        if (!res.ten.includes('THIẾU NHÂN SỰ')) {
+          const name = res.ten.trim().normalize('NFC');
+          updateMap[`${name}|${dateStr}`] = finalShift;
+        }
+        d.setDate(d.getDate() + 1);
       }
 
-      // Show notification for new files (not added by current session)
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added' && !isInitialLoad) {
-          const newDoc = change.doc.data();
-          if (newDoc.uploaderId !== user.uid) {
-            setNotification({ 
-              message: `Văn bản mới: ${newDoc.name} (Tải lên bởi ${newDoc.uploaderName || 'người dùng'})`, 
-              type: 'success' 
-            });
-            setTimeout(() => setNotification(null), 5000);
-          }
+      // 2. Process specific assignments for each leave
+      res.ketQua.forEach((item: any) => {
+        const dateStr = fmtIn(new Date(item.ngay));
+        
+        // Replacement person works the shift
+        if (item.nguoitructhay && item.nguoitructhay !== 'N/A' && !item.nguoitructhay.includes('THIẾU NHÂN SỰ')) {
+          const name = item.nguoitructhay.trim().normalize('NFC');
+          updateMap[`${name}|${dateStr}`] = item.ca;
+        }
+
+        // If it's a CK Swap, the absent person works the other shift
+        if (item.isCKSwap && item.swapAbsentTen && !item.swapAbsentTen.includes('THIẾU NHÂN SỰ')) {
+          const name = item.swapAbsentTen.trim().normalize('NFC');
+          const absentShift = xacDinhCa(new Date(item.ngay), item.kiptructhay);
+          updateMap[`${name}|${dateStr}`] = absentShift;
+        }
+
+        // If someone is relieved
+        if (item.relievedTen && !item.relievedTen.includes('THIẾU NHÂN SỰ')) {
+          const name = item.relievedTen.trim().normalize('NFC');
+          updateMap[`${name}|${dateStr}`] = 'O';
         }
       });
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'files');
     });
 
-    return () => unsubscribe();
-  }, [user, isInitialLoad]);
+    // 3. Process extraRows (Additional adjustments)
+    resObj.extraRows.forEach((row: any) => {
+      const dateStr = fmtIn(new Date(row.ngay));
+      
+      if (row.nguoitructhay && row.nguoitructhay !== 'N/A' && !row.nguoitructhay.includes('THIẾU NHÂN SỰ')) {
+        const name = row.nguoitructhay.trim().normalize('NFC');
+        updateMap[`${name}|${dateStr}`] = row.ca;
+      }
+      
+      if (row.relievedTen && !row.relievedTen.includes('THIẾU NHÂN SỰ')) {
+        const name = row.relievedTen.trim().normalize('NFC');
+        updateMap[`${name}|${dateStr}`] = 'O';
+      }
 
-  const handleLogin = async () => {
+      if (row.absentTen && !row.absentTen.includes('THIẾU NHÂN SỰ')) {
+        const name = row.absentTen.trim().normalize('NFC');
+        // Only set to F if not already assigned a working shift (like in a swap)
+        const currentVal = updateMap[`${name}|${dateStr}`];
+        if (!currentVal || currentVal === 'F') {
+          const originalShift = xacDinhCa(new Date(row.ngay), row.absentKip);
+          const finalShift = (originalShift === 'N' || originalShift === 'C' || originalShift === 'K') ? 'F' : originalShift;
+          updateMap[`${name}|${dateStr}`] = finalShift;
+        }
+      }
+    });
+
+    return Object.entries(updateMap).map(([key, shift]) => {
+      const [name, date] = key.split('|');
+      return { name, date, shift };
+    });
+  };
+
+  const updateGoogleSheets = async () => {
+    if (!isGoogleAuth || !currentResult) return;
+    setIsUpdatingSheets(true);
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      if (result.user) {
-        setHasLoggedAccess(true);
-        setUser(result.user);
-        const credential = GoogleAuthProvider.credentialFromResult(result);
-        if (credential) {
-          setAccessToken(credential.accessToken || null);
-        }
-        
-        // Log login after successful sign in
-        const u = result.user;
-        try {
-          await addDoc(collection(db, 'activity_logs'), {
-            userId: u.uid,
-            userEmail: u.email,
-            userName: u.displayName || u.email?.split('@')[0],
-            action: 'Đăng nhập',
-            details: 'Đăng nhập thành công vào hệ thống (Chrome/Manual)',
-            timestamp: serverTimestamp()
-          });
-        } catch (logError) {
-          console.warn("Could not log activity, but user is signed in:", logError);
-        }
-      }
-    } catch (error: any) {
-      console.error("Login failed:", error);
-      let msg = "Đăng nhập thất bại.";
-      if (error.code === 'auth/popup-blocked') {
-        msg = "Trình duyệt đã chặn cửa sổ bật lên. Vui lòng cho phép popup để đăng nhập.";
-      } else if (error.code === 'auth/popup-closed-by-user') {
-        msg = "Bạn đã đóng cửa sổ đăng nhập.";
-      } else if (error.code === 'auth/network-request-failed') {
-        msg = "Lỗi kết nối mạng hoặc bị trình duyệt chặn (Vui lòng kiểm tra Cookie bên thứ ba trong Chrome).";
+      const updates = getSheetsUpdates(currentResult);
+
+      console.log("Sending updates to Google Sheets:", updates);
+
+      const res = await fetch('/api/sheets/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          spreadsheetId: '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I',
+          updates
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAlert('✅ Đã cập nhật vào bảng theo dõi cơm ca');
       } else {
-        msg = `Lỗi: ${error.message}`;
+        if (res.status === 401) {
+          setIsGoogleAuth(false);
+        }
+        setAlert('⚠ Lỗi cập nhật Google Sheets: ' + (data.error || 'Unknown error'));
       }
-      setNotification({ message: msg, type: 'error' });
-      setTimeout(() => setNotification(null), 5000);
+    } catch (e) {
+      console.error(e);
+      setAlert('⚠ Lỗi kết nối Google Sheets');
+    } finally {
+      setIsUpdatingSheets(false);
     }
   };
 
-  const uploadToGoogleDrive = async (file: File, folderId: string) => {
-    if (!accessToken) throw new Error("Chưa có quyền truy cập Drive. Vui lòng đăng nhập lại.");
+  const handleUpdateStaff = (r: number, c: number, val: string) => {
+    const newData = [...staffData];
+    newData[r][c] = val.trim();
+    setStaffData(newData);
+    localStorage.setItem('sd', JSON.stringify(newData));
+  };
 
-    const metadata = {
-      name: file.name,
-      parents: [folderId],
-    };
-
-    const formData = new FormData();
-    formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-    formData.append('file', file);
-
-    const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-      },
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error?.message || "Lỗi tải lên Google Drive");
+  const addConcurrentLeave = () => {
+    if (!chucDanh) {
+      setAlert('⚠ Vui lòng chọn chức danh trước!');
+      return;
     }
+    setAdditionalLeaves([...additionalLeaves, { kip: '', start: '', end: '', chucDanh: chucDanh || (staffData[0] ? staffData[0][0] : '') }]);
+  };
 
-    return await response.json();
+  const removeConcurrentLeave = (idx: number) => {
+    const newList = [...additionalLeaves];
+    newList.splice(idx, 1);
+    setAdditionalLeaves(newList);
+  };
+
+  const updateConcurrentLeave = (idx: number, field: string, val: string) => {
+    const newList = [...additionalLeaves];
+    (newList[idx] as any)[field] = val;
+    setAdditionalLeaves(newList);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files || files.length === 0 || !user) return;
+    if (!files || files.length === 0) return;
+
+    setIsParsing(true);
+    setAlert(null);
     
-    setIsLoading(true);
-    const file = files[0];
-    
-    try {
-      if (!accessToken) {
-        setNotification({ message: 'Vui lòng đăng nhập lại để cấp quyền Drive!', type: 'error' });
-        setTimeout(() => setNotification(null), 3000);
+    let mainSet = !!(chucDanh && kipNghi);
+    const newAdditionalLeaves = [...additionalLeaves];
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        const text = result.value;
+
+        // Extraction logic
+        const nameMatch = text.match(/Tên tôi là:\s*(.*)/i);
+        const positionMatch = text.match(/Chức vụ:\s*(.*)/i);
+        const dateMatch = text.match(/Thời gian:\s*Từ ngày\s*(\d{2}\/\d{2}\/\d{4})\s*đến hết ngày\s*(\d{2}\/\d{2}\/\d{4})/i);
+
+        if (!nameMatch || !positionMatch || !dateMatch) {
+          errorCount++;
+          continue;
+        }
+
+        const extractedName = nameMatch[1].trim();
+        const extractedPosition = positionMatch[1].trim();
+        const startDateStr = dateMatch[1].trim();
+        const endDateStr = dateMatch[2].trim();
+
+        // Parse dates (DD/MM/YYYY to YYYY-MM-DD)
+        const parseDate = (dStr: string) => {
+          const [d, m, y] = dStr.split('/');
+          return `${y}-${m}-${d}`;
+        };
+
+        const startISO = parseDate(startDateStr);
+        const endISO = parseDate(endDateStr);
+
+        // Try to find the person in staffData to get the correct title and kip
+        let foundTitle = '';
+        let foundKip = '';
+
+        for (let r = 0; r < staffData.length; r++) {
+          for (let c = 1; c <= 5; c++) {
+            if (staffData[r][c]?.toLowerCase() === extractedName.toLowerCase()) {
+              foundTitle = staffData[r][0];
+              foundKip = String(c);
+              break;
+            }
+          }
+          if (foundTitle) break;
+        }
+
+        // If name not found, try to extract kip from position string (e.g., "Kíp2")
+        if (!foundKip) {
+          const kipMatch = extractedPosition.match(/Kíp\s*(\d)/i);
+          if (kipMatch) foundKip = kipMatch[1];
+        }
+
+        // If title not found, try to match extractedPosition with staffData titles
+        if (!foundTitle) {
+          const sortedTitles = [...staffData].sort((a, b) => b[0].length - a[0].length);
+          const matchedTitle = sortedTitles.find(r => extractedPosition.toLowerCase().includes(r[0].toLowerCase()));
+          if (matchedTitle) foundTitle = matchedTitle[0];
+        }
+
+        if (!mainSet) {
+          setNgayBatDau(startISO);
+          setNgayKetThuc(endISO);
+          setChucDanh(foundTitle);
+          setKipNghi(foundKip);
+          mainSet = true;
+          successCount++;
+        } else {
+          newAdditionalLeaves.push({
+            kip: foundKip,
+            start: startISO,
+            end: endISO,
+            chucDanh: foundTitle
+          });
+          successCount++;
+        }
+      } catch (err) {
+        console.error(err);
+        errorCount++;
+      }
+    }
+
+    setAdditionalLeaves(newAdditionalLeaves);
+
+    if (successCount > 0) {
+      setAlert(`✅ Đã trích xuất thành công ${successCount} đơn nghỉ phép.${errorCount > 0 ? ` (Thất bại ${errorCount} file)` : ''}`);
+    } else if (errorCount > 0) {
+      setAlert(`⚠ Không thể trích xuất thông tin từ ${errorCount} file. Vui lòng kiểm tra định dạng.`);
+    }
+
+    setIsParsing(false);
+    e.target.value = '';
+  };
+
+  const taoLich = () => {
+    setAlert(null);
+    if (!ngayBatDau || !ngayKetThuc || !chucDanh || !kipNghi) {
+      setAlert('⚠ Vui lòng nhập đầy đủ thông tin!');
+      return;
+    }
+
+    const start = new Date(ngayBatDau + 'T00:00:00');
+    const end = new Date(ngayKetThuc + 'T00:00:00');
+    const kip = +kipNghi;
+
+    if (start > end) {
+      setAlert('⚠ Ngày bắt đầu phải trước ngày kết thúc!');
+      return;
+    }
+
+    const ten = timNghi(chucDanh, kip, staffData);
+    if (!ten) {
+      setAlert(`⚠ Không tìm thấy chức danh "${chucDanh}" trong Kíp ${kip}!`);
+      return;
+    }
+
+    const allLeaves: Leave[] = [{ kip, start, end, ten, chucDanh }];
+    const addErr: string[] = [];
+    additionalLeaves.forEach((al, idx) => {
+      if (!al.kip && !al.start && !al.end) return;
+      if (!al.kip || !al.start || !al.end || !al.chucDanh) {
+        addErr.push(`Người nghỉ #${idx + 2} thiếu thông tin`);
+        return;
+      }
+      const alKip = +al.kip;
+      const alChucDanh = al.chucDanh;
+
+      // Check for duplicate kip within the same chucDanh
+      if (allLeaves.some(l => l.kip === alKip && l.chucDanh === alChucDanh)) {
+        addErr.push(`Kíp ${alKip} của chức danh ${alChucDanh} đã được thêm`);
         return;
       }
 
-      // 1. Upload to Google Drive
-      const driveData = await uploadToGoogleDrive(file, DRIVE_FOLDERS[uploadCategory]);
-      
-      // 2. Save metadata to Firestore (this triggers real-time updates for everyone)
-      const uploaderName = user.displayName || user.email?.split('@')[0] || 'Unknown';
-      const fileData = {
-        name: file.name,
-        type: file.type,
-        size: (file.size / 1024 / 1024).toFixed(1) + ' MB',
-        url: driveData.webContentLink || driveData.webViewLink || '', 
-        driveId: driveData.id,
-        category: uploadCategory,
-        date: new Date().toLocaleDateString('vi-VN'),
-        uploaderId: user.uid,
-        uploaderName: uploaderName,
-        readBy: [],
-        createdAt: serverTimestamp()
-      };
-
-      console.log("Saving file metadata to Firestore:", fileData);
-      await addDoc(collection(db, 'files'), fileData);
-      
-      // Activity Log
-      await addDoc(collection(db, 'activity_logs'), {
-        userId: user.uid,
-        userName: uploaderName,
-        action: 'upload_file',
-        details: `Tải lên văn bản: ${file.name}`,
-        timestamp: serverTimestamp()
-      });
-      
-      setNotification({ message: 'Đã tải lên Google Drive và thông báo thành công!', type: 'success' });
-      setTimeout(() => setNotification(null), 3000);
-    } catch (error: any) {
-      console.error(error);
-      let errorMsg = error.message || 'Lỗi hệ thống';
-      const isApiError = errorMsg.includes('Google Drive API has not been used');
-      
-      if (isApiError) {
-        setNotification({ 
-          message: 'LỖI: Bạn chưa bật Google Drive API. Hãy nhấn vào link trong console hoặc hướng dẫn để kích hoạt.', 
-          type: 'error' 
-        });
-      } else {
-        setNotification({ message: errorMsg, type: 'error' });
+      const alStart = new Date(al.start + 'T00:00:00');
+      const alEnd = new Date(al.end + 'T00:00:00');
+      if (alStart > alEnd) {
+        addErr.push(`Người nghỉ #${idx + 2} ngày bắt đầu sau ngày kết thúc`);
+        return;
       }
-      
-      setTimeout(() => setNotification(null), isApiError ? 15000 : 3000);
-      
-      if (!isApiError) {
-        handleFirestoreError(error, OperationType.WRITE, 'files');
+      const alTen = timNghi(alChucDanh, alKip, staffData);
+      if (!alTen) {
+        addErr.push(`Không tìm thấy "${alChucDanh}" trong Kíp ${alKip}`);
+        return;
       }
-    } finally {
-      setIsLoading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      allLeaves.push({ kip: alKip, start: alStart, end: alEnd, ten: alTen, chucDanh: alChucDanh });
+    });
+
+    if (addErr.length) {
+      setAlert('⚠ ' + addErr.join(' | '));
+      return;
     }
-  };
 
-  const handleDeleteFile = async (e: React.MouseEvent, fileId: string, fileName: string) => {
-    e.stopPropagation();
-    console.log("Delete triggered for:", fileId, fileName);
-    setFileToDelete({ id: fileId, name: fileName });
-  };
-
-  const confirmDeleteFile = async () => {
-    console.log("Confirming delete for:", fileToDelete);
-    if (!fileToDelete || !isAdmin) return;
-    
-    const { id: fileId, name: fileName } = fileToDelete;
-
-    try {
-      await deleteDoc(doc(db, 'files', fileId));
+    setIsProcessing(true);
+    setTimeout(() => {
+      // Tự động phát hiện và bổ sung các vị trí thiếu nhân sự (ô trống trong danh sách)
+      // Nếu một chức danh có người nghỉ phép, các kíp đang thiếu người ở chức danh đó cũng sẽ được xếp lịch thay
+      const minStart = new Date(Math.min(...allLeaves.map(l => l.start.getTime())));
+      const maxEnd = new Date(Math.max(...allLeaves.map(l => l.end.getTime())));
+      const involvedTitles = Array.from(new Set(allLeaves.map(l => l.chucDanh)));
       
-      // Log activity
-      await addDoc(collection(db, 'activity_logs'), {
-        userId: user?.uid,
-        userName: user?.displayName || user?.email?.split('@')[0],
-        action: 'delete_file',
-        details: `Đã xoá thông báo: ${fileName}`,
-        timestamp: serverTimestamp()
-      });
-
-      if (selectedFile?.id === fileId) {
-        setSelectedFile(null);
-      }
-      
-      setNotification({ message: 'Đã xoá thông báo thành công!', type: 'success' });
-      setTimeout(() => setNotification(null), 3000);
-      setFileToDelete(null);
-    } catch (error) {
-      console.error(error);
-      handleFirestoreError(error, OperationType.DELETE, 'files');
-      setNotification({ message: 'Lỗi khi xoá thông báo!', type: 'error' });
-      setTimeout(() => setNotification(null), 3000);
-    }
-  };
-
-  useEffect(() => {
-    if (selectedFile) {
-      renderFile(selectedFile);
-    }
-  }, [selectedFile]);
-
-  const unreadFilesCount = useMemo(() => {
-    if (!user) return 0;
-    return uploadedFiles.filter(f => !f.readBy?.includes(user.uid)).length;
-  }, [uploadedFiles, user]);
-
-  const markFileAsRead = useCallback(async (fileId: string) => {
-    if (!user) return;
-    const path = `files/${fileId}`;
-    try {
-      await updateDoc(doc(db, 'files', fileId), {
-        readBy: arrayUnion(user.uid)
-      });
-    } catch (error) {
-      console.error("Error marking file as read:", error);
-      handleFirestoreError(error, OperationType.UPDATE, path);
-    }
-  }, [user]);
-
-  const handleMarkAllAsRead = async () => {
-    if (!user || unreadFilesCount === 0) return;
-    try {
-      setIsLoading(true);
-      const promises = uploadedFiles
-        .filter(f => !f.readBy?.includes(user.uid))
-        .map(async f => {
-          try {
-            await updateDoc(doc(db, 'files', f.id), {
-              readBy: arrayUnion(user.uid)
-            });
-          } catch (err) {
-            handleFirestoreError(err, OperationType.UPDATE, `files/${f.id}`);
+      involvedTitles.forEach(title => {
+        const row = staffData.find(r => r[0] === title);
+        if (row) {
+          for (let k = 1; k <= 5; k++) {
+            const staffName = row[k] ? row[k].trim() : '';
+            if (staffName === '') {
+              if (!allLeaves.some(l => l.kip === k && l.chucDanh === title)) {
+                allLeaves.push({
+                  kip: k,
+                  start: minStart,
+                  end: maxEnd,
+                  ten: `THIẾU NHÂN SỰ (Kíp ${k})`,
+                  chucDanh: title
+                });
+              }
+            }
           }
-        });
-      await Promise.all(promises);
-      setNotification({ message: 'Đã đánh dấu tất cả là đã xem!', type: 'success' });
-      setTimeout(() => setNotification(null), 3000);
-    } catch (error) {
-      console.error("Error marking all as read:", error);
-    } finally {
-      setIsLoading(false);
+        }
+      });
+
+      // Group leaves by job title
+      const groups = allLeaves.reduce((acc, l) => {
+        if (!acc[l.chucDanh]) acc[l.chucDanh] = [];
+        acc[l.chucDanh].push(l);
+        return acc;
+      }, {} as Record<string, Leave[]>);
+
+      let mergedResults: any[] = [];
+      let mergedExtraRows: any[] = [];
+      let mergedHasConflict = false;
+      const mergedCoverCount: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+
+      Object.keys(groups).forEach(cd => {
+        const buildResult = buildMultiLeaveResults(groups[cd], cd, staffData);
+        mergedResults = [...mergedResults, ...buildResult.results];
+        mergedExtraRows = [...mergedExtraRows, ...buildResult.extraRows];
+        if (buildResult.hasConflict) mergedHasConflict = true;
+        for (let k = 1; k <= 5; k++) {
+          mergedCoverCount[k] += (buildResult.coverCount[k] || 0);
+        }
+      });
+
+      setCurrentResult({
+        ten, chucDanh, kip, start, end,
+        ketQua: mergedResults[0].ketQua,
+        allResults: mergedResults,
+        extraRows: mergedExtraRows,
+        hasConflict: mergedHasConflict,
+        coverCount: mergedCoverCount,
+        isMulti: allLeaves.length > 1
+      });
+      setIsProcessing(false);
+    }, 250);
+  };
+
+  const handleExportWord = async () => {
+    setIsProcessing(true);
+    await exportWord(currentResult, config);
+    if (isGoogleAuth) {
+      await updateGoogleSheets();
     }
+    setIsProcessing(false);
   };
 
   useEffect(() => {
-    if (mainView === 'repository' && selectedFile && user && !selectedFile.readBy?.includes(user.uid)) {
-      markFileAsRead(selectedFile.id);
+    if (showPreview) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = 'unset';
     }
-  }, [selectedFile, user, markFileAsRead, mainView]);
+    return () => {
+      document.body.style.overflow = 'unset';
+    };
+  }, [showPreview]);
 
-  // Tự động dọn dẹp dữ liệu (Văn bản 10 ngày, Nhật ký 3 tháng)
-  const cleanupOldData = useCallback(async () => {
-    if (!user) return;
+  const handlePreviewWord = async () => {
+    setIsProcessing(true);
+    const blob = await generateWordBlob(currentResult, config);
+    if (blob) {
+      setPreviewBlob(blob);
+      setIsPreviewingSwap(false);
+      setIsPreviewingLeave(false);
+      setShowPreview(true);
+    }
+    setIsProcessing(false);
+  };
+
+  const handlePreviewSwap = async () => {
+    setIsProcessing(true);
+    const blob = await generateSwapBlob(swapData, config, signatures);
+    if (blob) {
+      setPreviewBlob(blob);
+      setIsPreviewingSwap(true);
+      setIsPreviewingLeave(false);
+      setShowPreview(true);
+    }
+    setIsProcessing(false);
+  };
+
+  const handlePreviewLeave = async () => {
+    setIsProcessing(true);
+    const blob = await generateLeaveRequestBlob(leaveData, config, signatures);
+    if (blob) {
+      setPreviewBlob(blob);
+      setIsPreviewingSwap(false);
+      setIsPreviewingLeave(true);
+      setShowPreview(true);
+    }
+    setIsProcessing(false);
+  };
+
+  const handleExportLeave = async () => {
+    setIsProcessing(true);
+    await exportLeaveRequestDoc(leaveData, config, signatures);
+    setIsProcessing(false);
+  };
+
+  const saveLeaveToGoogleSheets = async () => {
+    if (!isGoogleAuth) {
+      setAlert("⚠ Vui lòng kết nối Google Sheets trước để lưu đơn.");
+      return;
+    }
+    if (!leaveData.name) {
+      setAlert("⚠ Vui lòng nhập Họ và tên người xin nghỉ.");
+      return;
+    }
+    setIsSavingLeaveToSheets(true);
     try {
-      const tenDaysAgo = new Date();
-      tenDaysAgo.setDate(tenDaysAgo.getDate() - 10);
-
-      const threeMonthsAgo = new Date();
-      threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-      
-      // Dọn dẹp Files (10 ngày)
-      const oldFilesQuery = query(
-        collection(db, 'files'),
-        where('createdAt', '<', tenDaysAgo),
-        limit(50)
-      );
-      const fileSnap = await getDocs(oldFilesQuery);
-      if (!fileSnap.empty) {
-        console.log(`🧹 Đang dọn dẹp ${fileSnap.size} văn bản cũ hơn 10 ngày...`);
-        const deletePromises = fileSnap.docs.map(d => deleteDoc(d.ref));
-        await Promise.all(deletePromises);
+      const res = await fetch('/api/sheets/leave-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(leaveData)
+      });
+      if (res.ok) {
+        setAlert(`✅ Đã lưu đơn của đồng chí ${leaveData.name} lên Google Sheets ở trạng thái Chờ phân ca!`);
+        fetchWaitingLeaves();
+        setShowPreview(false);
+      } else {
+        const errData = await res.json();
+        if (res.status === 401 || errData.auth_expired) {
+          setIsGoogleAuth(false);
+        }
+        setAlert(`❌ Lưu đơn thất bại: ${errData.error || "Lỗi máy chủ"}`);
       }
-
-      // Dọn dẹp Logs (3 tháng)
-      const oldLogsQuery = query(
-        collection(db, 'activity_logs'),
-        where('timestamp', '<', threeMonthsAgo),
-        limit(50)
-      );
-      const logSnap = await getDocs(oldLogsQuery);
-      if (!logSnap.empty) {
-        console.log(`🧹 Đang dọn dẹp ${logSnap.size} nhật ký cũ hơn 3 tháng...`);
-        const deletePromises = logSnap.docs.map(d => deleteDoc(d.ref));
-        await Promise.all(deletePromises);
-      }
-    } catch (error) {
-      console.error("Lỗi khi dọn dẹp dữ liệu cũ:", error);
+    } catch (e: any) {
+      setAlert(`❌ Đã xảy ra lỗi kết nối: ${e.message}`);
+    } finally {
+      setIsSavingLeaveToSheets(false);
     }
-  }, [user]);
+  };
+
+  const applyWaitingLeavesToForm = () => {
+    if (selectedWaitingLeaveIds.length === 0) {
+      setAlert("⚠ Vui lòng chọn ít nhất một đơn xin nghỉ phép trong danh sách chờ.");
+      return;
+    }
+    
+    const selectedItems = waitingLeaves.filter(item => selectedWaitingLeaveIds.includes(item.id));
+    if (selectedItems.length === 0) return;
+
+    // Đơn đầu tiên cho vào Người nghỉ chính
+    const first = selectedItems[0];
+    setNgayBatDau(first.startDate);
+    setNgayKetThuc(first.endDate);
+    setChucDanh(first.chucDanh);
+    setKipNghi(String(first.kip));
+
+    // Các đơn còn lại cho vào concurrent / additionalLeaves
+    const rem = selectedItems.slice(1);
+    const newAdditional = rem.map(item => ({
+      chucDanh: item.chucDanh,
+      kip: String(item.kip),
+      start: item.startDate,
+      end: item.endDate
+    }));
+    setAdditionalLeaves(newAdditional);
+
+    setAlert(`✅ Đã áp dụng ${selectedItems.length} đơn nghỉ phép vào form lập lịch. Nhấn "Tạo Lịch Thay Ca" để tính toán.`);
+  };
+
+  const handleDeleteWaitingLeaves = (ids: string[], isSingleName?: string) => {
+    if (!isGoogleAuth) return;
+    if (ids.length === 0) return;
+    
+    const message = isSingleName 
+      ? `Bạn có chắc chắn muốn xóa đơn nghỉ phép của anh/chị "${isSingleName}" khỏi Google Sheets không?`
+      : `Bạn có chắc chắn muốn danh sách ${ids.length} đơn nghỉ phép đã chọn bị xóa vĩnh viễn khỏi Google Sheets?`;
+
+    setConfirmModal({
+      isOpen: true,
+      title: "Xác nhận xóa đơn nghỉ phép",
+      message: message,
+      confirmText: "Đồng ý Xóa",
+      cancelText: "Hủy bỏ",
+      isDanger: true,
+      requirePassword: true,
+      onConfirm: async () => {
+        setIsLoadingWaitingLeaves(true);
+        try {
+          const res = await fetch('/api/sheets/leave-requests/delete', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ ids })
+          });
+
+          if (res.ok) {
+            setAlert(isSingleName 
+              ? `✅ Đã xóa đơn của "${isSingleName}" thành công!`
+              : `✅ Đã xóa thành công ${ids.length} đơn nghỉ phép!`
+            );
+            setSelectedWaitingLeaveIds(prev => prev.filter(id => !ids.includes(id)));
+            fetchWaitingLeaves();
+          } else if (res.status === 401) {
+            setIsGoogleAuth(false);
+            setAlert("⚠ Phiên kết nối Google Sheets đã hết hạn. Vui lòng kết nối lại tài khoản.");
+          } else {
+            const data = await res.json();
+            setAlert(`❌ Xóa đơn thất bại: ${data.error || "Lỗi máy chủ"}`);
+          }
+        } catch (err: any) {
+          setAlert(`❌ Lỗi kết nối xóa đơn nghỉ: ${err.message}`);
+        } finally {
+          setIsLoadingWaitingLeaves(false);
+        }
+      }
+    });
+  };
+
+  const proceedExportAllZipAndUpdateStatus = async (shouldUpdateAnnualLeave: boolean) => {
+    if (!currentResult) return;
+    setIsProcessing(true);
+    try {
+      const selectedLeavesData = waitingLeaves.filter(item => selectedWaitingLeaveIds.includes(item.id));
+      
+      // 1. Download the ZIP file
+      await exportAllDocsZip(currentResult, selectedLeavesData, config, signatures);
+      
+      let isSheetSynced = false;
+      let sheetSyncError = "";
+
+      // 2. Clear/Synchronize schedule & meal reports if authenticated
+      if (isGoogleAuth) {
+        try {
+          const updates = getSheetsUpdates(currentResult);
+          if (updates.length > 0) {
+            const syncRes = await fetch('/api/sheets/update', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                spreadsheetId: '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I',
+                updates
+              })
+            });
+            const syncData = await syncRes.json();
+            if (syncRes.ok && syncData.success) {
+              isSheetSynced = true;
+            } else {
+              sheetSyncError = syncData.error || "Lỗi máy chủ";
+            }
+          } else {
+            isSheetSynced = true; // No updates needed
+          }
+        } catch (syncErr: any) {
+          console.error("Auto-sync error:", syncErr);
+          sheetSyncError = syncErr.message;
+        }
+
+        // 2b. Write to "Số ngày phép" if requested
+        if (shouldUpdateAnnualLeave) {
+          try {
+            const getTongCaTrucPhaiThay = (resItem: any) => {
+              let dem = 0;
+              let ngaychao = new Date(resItem.start);
+              const ngayEnd = new Date(resItem.end);
+              while (ngaychao <= ngayEnd) {
+                const cahientai = xacDinhCa(ngaychao, resItem.kip);
+                if (cahientai !== 'O') dem++;
+                ngaychao.setDate(ngaychao.getDate() + 1);
+              }
+              return dem;
+            };
+
+            const updatesAnnualLeaves = currentResult.allResults
+              .filter((r: any) => r.ten && !r.ten.includes("THIẾU NHÂN SỰ"))
+              .map((r: any) => ({
+                name: r.ten,
+                tongcatrucphaithay: getTongCaTrucPhaiThay(r)
+              }));
+
+            if (updatesAnnualLeaves.length > 0) {
+              const annualRes = await fetch('/api/sheets/update-annual-leaves', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  spreadsheetId: '1pH1-Nj4B1nauoEfO5cZG13Wlk_UrUrFDq_eucf5a-IY',
+                  updates: updatesAnnualLeaves
+                })
+              });
+              const annualData = await annualRes.json();
+              if (annualRes.ok && annualData.success) {
+                let msg = "Ghi bảng theo dõi phép năm thành công!";
+                if (annualData.skippedNames && annualData.skippedNames.length > 0) {
+                  msg += ` (Không tìm thấy tên: ${annualData.skippedNames.join(', ')})`;
+                }
+                console.log(msg);
+              } else {
+                console.error("Lỗi ghi phép năm:", annualData.error);
+                sheetSyncError = (sheetSyncError ? sheetSyncError + "; " : "") + `Lỗi phép năm: ${annualData.error || "Không rõ"}`;
+              }
+            }
+          } catch (annualErr: any) {
+            console.error("Annual leave update error:", annualErr);
+            sheetSyncError = (sheetSyncError ? sheetSyncError + "; " : "") + `Lỗi phép năm: ${annualErr.message}`;
+          }
+        }
+      }
+
+      // 3. Update waiting leaves status to 'Đã xử lý'
+      if (selectedWaitingLeaveIds.length > 0) {
+        const updateRes = await fetch('/api/sheets/leave-requests/update-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ids: selectedWaitingLeaveIds,
+            status: "Đã xử lý"
+          })
+        });
+        
+        if (updateRes.ok) {
+          if (isGoogleAuth) {
+            let detailMsg = "Hệ thống đã đồng bộ lịch mới và tự động ghi vào Bảng báo cơm ca.";
+            if (shouldUpdateAnnualLeave) {
+              detailMsg += " Đồng thời đã tự động ghi số ngày phép vào sheet Số ngày phép.";
+            }
+            if (sheetSyncError) {
+              setAlert(`🎁 Đã xuất ZIP & đổi trạng thái đơn thành 'Đã xử lý', nhưng gặp lỗi đồng bộ bảng: ${sheetSyncError}`);
+            } else {
+              setAlert(`🎁 Xuất trọn bộ file ZIP thành công! ${detailMsg} Trạng thái đơn chuyển thành 'Đã xử lý'.`);
+            }
+          } else {
+            setAlert("✅ Đã xuất trọn bộ hồ sơ dạng ZIP và cập nhật trạng thái 'Đã xử lý' lên Google Sheets!");
+          }
+          fetchWaitingLeaves();
+        } else {
+          const errData = await updateRes.json();
+          if (updateRes.status === 401 || errData.auth_expired) {
+            setIsGoogleAuth(false);
+          }
+          setAlert(`✅ Xuất hồ sơ thành công nhưng lỗi cập nhật trạng thái Google Sheets: ${errData.error || ""}`);
+        }
+      } else {
+        if (isGoogleAuth) {
+          let detailMsg = "đồng bộ lịch trực, tự động ghi vào Bảng báo cơm ca";
+          if (shouldUpdateAnnualLeave) {
+            detailMsg += " & cập nhật số ngày phép vào sheet Số ngày phép";
+          }
+          if (sheetSyncError) {
+            setAlert(`🎁 Đã xuất hồ sơ ZIP, nhưng gặp lỗi: ${sheetSyncError}`);
+          } else {
+            setAlert(`🎁 Đã xuất trọn bộ hồ sơ dạng ZIP, ${detailMsg} thành công!`);
+          }
+          setAlert(`🎁 Đã xuất trọn bộ hồ sơ dạng ZIP & ${detailMsg} thành công!`);
+        } else {
+          setAlert("✅ Đã tải xuống hồ sơ dạng ZIP thành công!");
+        }
+      }
+    } catch (e: any) {
+      console.error(e);
+      setAlert(`❌ Lỗi trong quá trình xuất trọn bộ hồ sơ: ${e.message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleExportAllZipAndUpdateStatus = async () => {
+    if (!currentResult) return;
+    
+    if (isGoogleAuth) {
+      setConfirmModal({
+        isOpen: true,
+        title: "Ghi vào Bảng theo dõi phép năm?",
+        message: "Bạn có muốn ghi số ca trực nghỉ (tongcatrucphaithay) của các đồng chí nghỉ phép vào cột F và tìm tên ở cột B của sheet 'Số ngày phép' không?",
+        confirmText: "Có, ghi bảng",
+        cancelText: "Không, bỏ qua",
+        onConfirm: () => {
+          proceedExportAllZipAndUpdateStatus(true);
+        },
+        onCancel: () => {
+          proceedExportAllZipAndUpdateStatus(false);
+        }
+      });
+    } else {
+      await proceedExportAllZipAndUpdateStatus(false);
+    }
+  };
+
+  const updateSwapGoogleSheets = async () => {
+    if (!isGoogleAuth || !swapData.person1 || !swapData.person2) return;
+    setIsUpdatingSheets(true);
+    try {
+      const updateMap: Record<string, string> = {}; // key: "name|date"
+
+      const p1 = swapData.person1.trim().normalize('NFC');
+      const p2 = swapData.person2.trim().normalize('NFC');
+
+      if (swapData.shift1 !== 'None' && swapData.shift2 !== 'None') {
+        if (swapData.date1 === swapData.date2) {
+          // Same day swap: P1 takes P2's shift, P2 takes P1's shift
+          updateMap[`${p1}|${swapData.date1}`] = swapData.shift2;
+          updateMap[`${p2}|${swapData.date1}`] = swapData.shift1;
+        } else {
+          // Different day swap
+          updateMap[`${p1}|${swapData.date1}`] = 'O';
+          updateMap[`${p1}|${swapData.date2}`] = swapData.shift2;
+          updateMap[`${p2}|${swapData.date1}`] = swapData.shift1;
+          updateMap[`${p2}|${swapData.date2}`] = 'O';
+        }
+      } else if (swapData.shift1 !== 'None' && swapData.shift2 === 'None') {
+        // P1 absent, P2 covers P1. P2 has no shift to give back.
+        updateMap[`${p1}|${swapData.date1}`] = 'O';
+        updateMap[`${p2}|${swapData.date1}`] = swapData.shift1;
+      } else if (swapData.shift1 === 'None' && swapData.shift2 !== 'None') {
+        // P2 absent, P1 covers P2. P1 has no shift to give back.
+        updateMap[`${p2}|${swapData.date2}`] = 'O';
+        updateMap[`${p1}|${swapData.date2}`] = swapData.shift2;
+      }
+
+      const updates = Object.entries(updateMap).map(([key, shift]) => {
+        const [name, date] = key.split('|');
+        return { name, date, shift };
+      });
+
+      console.log("Sending manual swap updates to Google Sheets:", updates);
+
+      const res = await fetch('/api/sheets/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          spreadsheetId: '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I',
+          updates
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAlert('✅ Đã cập nhật Google Sheets thành công cho Lịch Đổi Ca');
+      } else {
+        if (res.status === 401 || data.auth_expired) {
+          setIsGoogleAuth(false);
+        }
+        setAlert('⚠ Lỗi cập nhật Google Sheets: ' + (data.error || 'Unknown error'));
+      }
+    } catch (err) {
+      console.error(err);
+      setAlert('⚠ Lỗi kết nối Google Sheets');
+    } finally {
+      setIsUpdatingSheets(false);
+    }
+  };
+
+  const handleExportSwap = async () => {
+    setIsProcessing(true);
+    await exportSwapDoc(swapData, config, signatures);
+    if (isGoogleAuth) {
+      await updateSwapGoogleSheets();
+    }
+    setIsProcessing(false);
+  };
 
   useEffect(() => {
-    if (user) {
-      // Đợi một chút sau khi load xong rồi mới dọn dẹp để không ảnh hưởng hiệu năng ban đầu
-      const timer = setTimeout(() => {
-        cleanupOldData();
-      }, 5000);
-      return () => clearTimeout(timer);
+    if (showPreview && previewBlob && previewRef.current) {
+      renderAsync(previewBlob, previewRef.current)
+        .catch(err => console.error("Preview error:", err));
     }
-  }, [user, cleanupOldData]);
+  }, [showPreview, previewBlob]);
 
-  const renderFile = async (file: UploadedFile) => {
-    setWordContent(null);
-    if (!file.url) return;
-
-    // For Word files, we still try Mammoth for a "native" feel if possible, 
-    // but fall back to the iframe viewer for everything else including Excel and PDF
-    if (file.type.includes('word') || file.name.endsWith('.docx')) {
-      setIsLoading(true);
-      try {
-        const response = await fetch(file.url);
-        const blob = await response.blob();
-        const arrayBuffer = await blob.arrayBuffer();
-        const result = await mammoth.convertToHtml({ arrayBuffer });
-        setWordContent(result.value);
-      } catch (err) {
-        console.error("Mammoth failed, falling back to iframe:", err);
-        setWordContent(null); // Fallback to iframe
-      } finally {
-        setIsLoading(false);
-      }
-    } else {
-      setWordContent(null);
-    }
+  const handleExportCSV = () => {
+    if (!currentResult) return;
+    const d = currentResult;
+    let csv = '\uFEFF';
+    csv += 'CÔNG TY THỦY ĐIỆN IALY - BẢNG PHÂN CÔNG TRỰC THAY NGHỈ PHÉP\n\n';
+    csv += `Người nghỉ:,${d.ten}\nChức danh:,${d.chucDanh}\nKíp:,Kíp ${d.kip}\n`;
+    csv += `Thời gian:,${fmtVN(d.start)} đến ${fmtVN(d.end)}\n\n`;
+    csv += 'STT,Ngày,Ca nghỉ,Kíp thay,Người đi thay\n';
+    d.ketQua.forEach((it: any, i: number) => {
+      csv += `${i + 1},${fmtVN(it.ngay)},${it.ca},Kíp ${it.kiptructhay},${it.nguoitructhay}\n`;
+    });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Lich_nghi_${d.ten.replace(/\s+/g, '_')}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
-  const getPreviewUrl = (file: UploadedFile) => {
-    if (!file.url) return '';
-    
-    // If it's a Google Drive file, use the official preview endpoint
-    if (file.driveId) {
-      return `https://drive.google.com/file/d/${file.driveId}/preview`;
-    }
-    
-    // Fallback for other URLs: Google Docs Viewer
-    return `https://docs.google.com/viewer?url=${encodeURIComponent(file.url)}&embedded=true`;
-  };
-
-  const openInNewTab = () => {
-    if (!selectedFile?.url) return;
-    if (selectedFile.driveId) {
-      window.open(`https://drive.google.com/file/d/${selectedFile.driveId}/view`, '_blank');
-    } else {
-      window.open(selectedFile.url, '_blank');
-    }
-  };
-
-  if (!authReady) {
-    return (
-      <div className="fixed inset-0 bg-[#111820] flex items-center justify-center">
-        <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
+  // Flatten rows for display
+  const shiftOrd: Record<string, number> = { N: 0, C: 1, K: 2 };
+  const allRows: any[] = [];
+  if (currentResult) {
+    currentResult.allResults.forEach((res: any) => {
+      res.ketQua.forEach((it: any) => {
+        allRows.push({
+          ngay: it.ngay, ca: it.ca,
+          absentKip: res.kip,
+          absentTen: res.ten,
+          chucDanh: res.chucDanh,
+          kipThay: it.kiptructhay, nguoiThay: it.nguoitructhay,
+          relievedKip: it.relievedKip, relievedTen: it.relievedTen,
+          isConflict: it.isConflict, conflictNote: it.conflictNote || '',
+          isOverlapDay: it.isOverlapDay,
+          isCKChain: false,
+          isSwap: false
+        });
+      });
+    });
+    (currentResult.extraRows || []).forEach((it: any) => {
+      if (it.isSwapCRow) return;
+      allRows.push({
+        ngay: it.ngay, ca: it.ca,
+        absentKip: it.absentKip, absentTen: it.absentTen,
+        chucDanh: it.chucDanh,
+        kipThay: it.kiptructhay, nguoiThay: it.nguoitructhay,
+        relievedKip: it.relievedKip, relievedTen: it.relievedTen,
+        isConflict: it.isConflict, conflictNote: it.conflictNote || '',
+        isOverlapDay: it.isOverlapDay, 
+        isCKChain: it.isCKChain,
+        isSwap: it.isSwap || false, 
+        isSwapCRow: false
+      });
+    });
+    allRows.sort((a, b) => {
+      if (a.ngay < b.ngay) return -1;
+      if (a.ngay > b.ngay) return 1;
+      return (shiftOrd[a.ca] || 0) - (shiftOrd[b.ca] || 0);
+    });
   }
 
-  if (!user) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#111820]">
-        <div className="absolute inset-0 grid-bg opacity-20" />
-        <motion.div 
-          initial={{ scale: 0.9, opacity: 0 }} 
-          animate={{ scale: 1, opacity: 1 }} 
-          className="relative z-10 w-[400px] p-10 bg-[#141c24] border border-[#243547] text-center shadow-2xl"
-        >
-          <div className="text-4xl mb-6">🏢</div>
-          <h1 className="text-2xl font-bold text-white tracking-[4px] mb-2 font-sans">IALY PORTAL</h1>
-          <p className="text-[11px] text-[#4a6278] mb-10 font-bold uppercase tracking-widest leading-relaxed">Hệ thống quản lý văn bản nội bộ<br/>Nhà máy Thuỷ điện Ialy</p>
-          <button 
-            onClick={handleLogin}
-            className="w-full py-4 bg-[#00a8ff] text-white font-bold tracking-[3px] uppercase hover:brightness-110 transition-all shadow-[0_0_20px_rgba(0,168,255,0.2)] flex items-center justify-center gap-3"
-          >
-            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
-            ĐĂNG NHẬP VỚI GOOGLE
-          </button>
-          <div className="mt-6 text-[10px] text-[#4a6278] uppercase tracking-widest font-bold">Phiên bản 2026.5.3</div>
-        </motion.div>
-      </div>
-    );
-  }
+  const coverStats: Record<number, any> = {};
+  allRows.forEach(row => {
+    const k = row.kipThay;
+    const cd = row.chucDanh;
+    if (!coverStats[k]) coverStats[k] = { total: 0, N: 0, C: 0, K: 0, byCD: {} };
+    coverStats[k].total++;
+    coverStats[k][row.ca]++;
+    if (!coverStats[k].byCD[cd]) coverStats[k].byCD[cd] = 0;
+    coverStats[k].byCD[cd]++;
+  });
+
+  const isEvenDistribution = () => {
+    const counts = Object.values(coverStats).map(s => s.total);
+    if (counts.length === 0) return true;
+    return (Math.max(...counts) - Math.min(...counts)) <= 1;
+  };
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-[#f8fafc] font-sans selection:bg-blue-100 selection:text-blue-700">
-      {/* Main Top Header Navigation */}
-      <header className="h-[60px] bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-8 shrink-0 z-50 shadow-sm overflow-hidden">
-        <div className="flex items-center gap-3 sm:gap-4 shrink-0">
-          <div className="w-8 h-8 sm:w-9 sm:h-9 bg-gradient-to-br from-blue-600 to-sky-500 text-white font-black rounded-lg flex items-center justify-center text-base sm:text-lg italic shadow-lg shadow-blue-500/20">IA</div>
-          <div className="flex flex-col hidden xs:flex">
-            <span className="text-[13px] sm:text-[15px] font-black tracking-tighter text-gray-900 leading-none">VHIALY</span>
-            <span className="text-[8px] sm:text-[9px] font-bold text-blue-600 uppercase tracking-widest mt-1">Ứng dụng dùng chung</span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 sm:gap-8 h-full overflow-x-auto no-scrollbar scroll-smooth px-2">
-          <button 
-            onClick={() => { setMainView('portal'); }}
-            className={`flex items-center gap-1.5 sm:gap-2 h-full border-b-2 font-bold text-xs sm:text-sm transition-all px-1.5 sm:px-2 flex-nowrap whitespace-nowrap ${mainView === 'portal' ? 'text-blue-600 border-blue-600 bg-blue-50/50' : 'text-gray-400 border-transparent hover:text-gray-600'}`}
-          >
-            <LayoutDashboard size={14} className="sm:w-4 sm:h-4" />
-            <span className="hidden xs:inline">CỔNG THÔNG TIN</span>
-            <span className="xs:hidden">CỔNG</span>
-          </button>
-          <button 
-            onClick={() => { setMainView('dashboard'); }}
-            className={`flex items-center gap-1.5 sm:gap-2 h-full border-b-2 font-bold text-xs sm:text-sm transition-all px-1.5 sm:px-2 flex-nowrap whitespace-nowrap ${mainView === 'dashboard' ? 'text-blue-600 border-blue-600 bg-blue-50/50' : 'text-gray-400 border-transparent hover:text-gray-600'}`}
-          >
-            <BarChart3 size={14} className="sm:w-4 sm:h-4" />
-            <span className="hidden xs:inline">DASHBOARD</span>
-            <span className="xs:hidden">DASH</span>
-          </button>
-          <button 
-            onClick={() => { setMainView('repository'); }}
-            className={`flex items-center gap-1.5 sm:gap-2 h-full border-b-2 font-bold text-xs sm:text-sm transition-all px-1.5 sm:px-2 flex-nowrap whitespace-nowrap ${mainView === 'repository' ? 'text-blue-600 border-blue-600 bg-blue-50/50' : 'text-gray-400 border-transparent hover:text-gray-600'}`}
-          >
-            <FolderArchive size={14} className="sm:w-4 sm:h-4" /> 
-            VĂN BẢN
-            {unreadFilesCount > 0 && (
-              <span className="w-4 h-4 sm:w-5 sm:h-5 rounded-full bg-rose-600 text-white text-[9px] sm:text-[10px] font-black flex items-center justify-center animate-pulse shadow-sm px-1 min-w-[16px] sm:min-w-[20px]">
-                {unreadFilesCount}
-              </span>
-            )}
-          </button>
-          {isAdmin && (
-            <button 
-              onClick={() => { setMainView('admin'); }}
-              className={`flex items-center gap-1.5 sm:gap-2 h-full border-b-2 font-bold text-xs sm:text-sm transition-all px-1.5 sm:px-2 flex-nowrap whitespace-nowrap ${mainView === 'admin' ? 'text-purple-600 border-purple-600 bg-purple-50/50' : 'text-gray-400 border-transparent hover:text-purple-600'}`}
-            >
-              <ShieldCheck size={14} className="sm:w-4 sm:h-4" /> 
-              ADMIN
-            </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 sm:gap-4 shrink-0">
-          <div className="hidden sm:flex items-center gap-3 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-100">
-            <div className="w-6 h-6 rounded-full bg-gradient-to-br from-green-500 to-emerald-400 flex items-center justify-center text-[10px] text-white font-bold">
-              {user.email?.[0].toUpperCase()}
-            </div>
-            <span className="text-[11px] font-semibold text-gray-600 hidden md:block">{user.email}</span>
-          </div>
-          <button onClick={() => auth.signOut()} className="text-[#e63946] font-bold text-[10px] sm:text-xs uppercase tracking-widest hover:underline px-1 sm:px-2 whitespace-nowrap">Đăng xuất</button>
-        </div>
+    <div className="wrap">
+      <header>
+        <div className="tag">Công ty Thủy Điện Ialy &middot; Phân Xưởng Vận Hành Ialy</div>
+        <h1>Lịch Trực Thay Ca Nghỉ Phép</h1>
+        <p className="sub">Hệ thống phân công tự động lịch trực ca vận hành nghỉ phép</p>
       </header>
 
-      <AnimatePresence mode="wait">
-        {mainView === 'repository' ? (
-              <motion.div 
-                key="repository"
-                initial={{ opacity: 0, scale: 0.98 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 1.02 }}
-                className="flex-1 flex flex-col lg:flex-row overflow-hidden bg-[#f0f4f8]"
-              >
-                <aside className="w-full lg:w-[320px] h-[35%] lg:h-full bg-white border-b lg:border-b-0 lg:border-r border-gray-200 flex flex-col shadow-xl z-20 shrink-0">
-                  <div className="p-3 border-b border-gray-100 flex flex-col gap-2">
-                    <div className="flex items-center p-1 bg-gray-50 rounded-lg w-full">
-                      <div className={cn(
-                        "flex-1 px-4 py-1.5 rounded-md text-[13px] font-black shadow-sm text-center uppercase tracking-wider transition-all",
-                        unreadFilesCount > 0 ? "bg-rose-600 text-white animate-pulse" : "bg-[#e8f0fe] text-blue-700"
-                      )}>
-                        Thông báo ({unreadFilesCount})
-                      </div>
-                    </div>
-                    {unreadFilesCount > 0 && (
-                      <button 
-                        onClick={handleMarkAllAsRead}
-                        className="text-[10px] font-black text-blue-600 uppercase tracking-widest hover:text-blue-700 transition-colors flex items-center justify-center gap-1.5 py-1"
-                      >
-                        <CheckCircle2 size={12} />
-                        Đã xem tất cả
-                      </button>
-                    )}
-                  </div>
-                  
-              
-
-                  <div className="flex-1 overflow-y-auto bg-white custom-scrollbar">
-                    {uploadedFiles.map(file => (
-                      <div 
-                        key={file.id} 
-                        onClick={() => setSelectedFile(file)}
-                        className={`p-4 border-b border-gray-100 cursor-pointer transition-all relative ${selectedFile?.id === file.id ? 'bg-[#f0f7ff]' : 'hover:bg-gray-50'}`}
-                      >
-                        {selectedFile?.id === file.id && <div className="absolute left-0 top-0 bottom-0 w-[4px] bg-blue-600" />}
-                        <div className="flex justify-between items-start mb-1.5 pr-1">
-                          <div className="flex items-center gap-2">
-                            {file.category && (
-                              <span className={`text-[9px] font-black px-1.5 py-0.5 rounded w-fit uppercase ${
-                                file.category === 'KPI' ? 'bg-indigo-100 text-indigo-700' :
-                                file.category === 'LHC' ? 'bg-indigo-100 text-indigo-700' :
-                                file.category === 'SAFETY' ? 'bg-orange-100 text-orange-700' : 
-                                file.category === 'ECONOMY' ? 'bg-emerald-100 text-emerald-700' :
-                                'bg-gray-100 text-gray-600'
-                              }`}>
-                                {file.category === 'KPI' ? 'KPI Phân xưởng' :
-                                  file.category === 'LHC' ? 'Lịch hành chính' :
-                                 file.category === 'SAFETY' ? 'Biên bản phổ biến TNGT' : 
-                                 file.category === 'ECONOMY' ? 'Biên bản phổ biến TNLĐ' :
-                                 'Thông báo chung'}
-                              </span>
-                            )}
-                            {user && !file.readBy?.includes(user.uid) && (
-                              <div className="w-2 h-2 bg-rose-500 rounded-full shadow-[0_0_8px_#f43f5e] animate-pulse" />
-                            )}
-                          </div>
-                          <div className="flex items-center gap-3 relative z-10">
-                            <span className="text-[11px] text-gray-500">{file.date}</span>
-                            {isAdmin && (
-                              <button 
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  handleDeleteFile(e, file.id!, file.name);
-                                }}
-                                className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 transition-all rounded-full shrink-0 group/del cursor-pointer pointer-events-auto"
-                                style={{ pointerEvents: 'auto' }}
-                                title="Xoá thông báo"
-                              >
-                                <Trash2 size={15} className="group-hover/del:scale-110 transition-transform" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                        <div className="text-[13px] text-gray-700 font-semibold leading-snug mb-2 line-clamp-2">
-                          {file.name.includes('Lich_doi_ca') ? `Trình Xuân An-Đăng ký đổi ca (Tham gia họp phân xưởng ngày ${file.date})` : file.name}
-                        </div>
-                        <div className="text-[11px] leading-relaxed text-blue-600/80 font-medium">
-                          {file.name.endsWith('.xlsx') || file.name.endsWith('.xls') ? 'Bảng tính Excel' : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="p-4 border-t border-gray-100 bg-gray-50 space-y-3">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-[10px] font-black text-gray-400 uppercase ml-1">Danh mục lưu trữ</label>
-                      <select 
-                        value={uploadCategory} 
-                        onChange={(e) => setUploadCategory(e.target.value as any)}
-                        className="w-full p-2 bg-white border border-gray-200 rounded text-[11px] font-bold text-gray-700 outline-none focus:border-blue-500 transition-colors"
-                      >
-                        <option value="GENERAL">THÔNG BÁO CHUNG</option>
-                        <option value="KPI">KPI PHÂN XƯỞNG</option>
-                        <option value="LHC">LỊCH HÀNH CHÍNH</option>
-                        <option value="SAFETY">BIÊN BẢN PHỔ BIẾN TNGT</option>
-                        <option value="ECONOMY">BIÊN BẢN PHỔ BIẾN TNLĐ</option>
-                      </select>
-                    </div>
-                    <button 
-                      onClick={() => fileInputRef.current?.click()}
-                      className="w-full py-2.5 bg-blue-600 text-white text-[12px] font-bold rounded flex items-center justify-center gap-2 shadow-sm hover:bg-blue-700 transition-all uppercase tracking-wider"
-                    >
-                      <Upload size={14}/> TẢI LÊN VĂN BẢN MỚI
-                    </button>
-                    <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx" />
-                  </div>
-                </aside>
-
-                <main className="flex-1 flex flex-col bg-[#525659] relative overflow-hidden h-[65%] lg:h-full">
-                  {selectedFile ? (
-                    <>
-                      <div className="bg-white p-4 px-6 border-b border-gray-200 flex flex-col gap-2 shrink-0">
-                        <div className="flex items-center gap-4 text-[13px]">
-                          <span className="text-gray-400 font-medium min-w-[90px]">File văn bản:</span>
-                          <div className="flex items-center gap-4">
-                            {selectedFile.name.endsWith('.pdf') ? (
-                              <span className="flex items-center gap-1.5 text-red-600 font-semibold cursor-pointer border-b border-transparent hover:border-red-600">
-                                <div className="w-4 h-4 bg-red-500 flex items-center justify-center text-[10px] text-white font-bold rounded-sm">P</div>
-                                {selectedFile.name}
-                              </span>
-                            ) : (selectedFile.name.endsWith('.xlsx') || selectedFile.name.endsWith('.xls')) ? (
-                              <span className="flex items-center gap-1.5 text-green-600 font-semibold cursor-pointer border-b border-transparent hover:border-green-600">
-                                <div className="w-4 h-4 bg-green-600 flex items-center justify-center text-[10px] text-white font-bold rounded-sm">X</div>
-                                {selectedFile.name}
-                              </span>
-                            ) : (
-                              <span className="flex items-center gap-1.5 text-blue-600 font-semibold cursor-pointer border-b border-transparent hover:border-blue-600">
-                                <div className="w-4 h-4 bg-blue-500 flex items-center justify-center text-[10px] text-white font-bold rounded-sm">W</div>
-                                {selectedFile.name}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-4 text-[13px]">
-                          <span className="text-gray-400 font-medium min-w-[90px]">Người tải:</span>
-                          <span className="text-blue-600 font-bold uppercase">{selectedFile.uploaderName || 'Hệ thống'}</span>
-                        </div>
-                      </div>
-
-                      <div className="bg-[#cbd5e1] min-h-[48px] py-2 lg:py-0 flex flex-col sm:flex-row items-center justify-between px-4 sm:px-6 shrink-0 border-b border-gray-300 shadow-sm gap-2">
-                        <div className="flex items-center gap-3 sm:gap-5 text-gray-700 w-full sm:w-auto overflow-hidden">
-                          <button className="hover:bg-gray-400/20 p-2 rounded-md transition-colors shrink-0"><Settings size={18} className="text-gray-600"/></button>
-                          <div className="flex items-center gap-2 text-[12px] bg-white px-3 py-1 border border-gray-400 shadow-inner rounded-sm shrink-0">
-                            <input type="text" value="1" className="w-6 text-center outline-none text-blue-600 font-bold" readOnly />
-                            <span className="text-gray-400">trên 1</span>
-                          </div>
-                          <span className="text-[12px] sm:text-[13px] font-bold text-gray-800 ml-1 tracking-wide truncate max-w-[200px]">{selectedFile.name}</span>
-                        </div>
-                        <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto justify-end">
-                          <button onClick={openInNewTab} className="flex items-center gap-1.5 px-3 sm:px-4 py-1.5 bg-[#0061f2] text-white text-[10px] sm:text-[11px] font-black rounded-md hover:bg-blue-700 transition-all shadow-sm active:scale-95 uppercase tracking-tighter sm:tracking-normal">
-                            <Maximize2 size={13}/> <span className="hidden sm:inline">MỞ TRONG TAB MỚI</span><span className="sm:hidden">TAB MỚI</span>
-                          </button>
-                          <div className="w-[1px] h-6 bg-gray-400/30 mx-0.5" />
-                          <button className="p-1.5 sm:p-2 hover:bg-gray-400/30 rounded-md transition-colors"><Eye size={20} className="text-gray-600"/></button>
-                          <a href={selectedFile.url} download className="p-1.5 sm:p-2 hover:bg-gray-400/30 rounded-md transition-colors"><Download size={20} className="text-gray-600"/></a>
-                        </div>
-                      </div>
-
-                      <div className="flex-1 overflow-auto p-2 sm:p-8 flex justify-center bg-[#525659] custom-scrollbar">
-                        <div className="w-full max-w-[950px] min-h-[500px] lg:min-h-[1200px] h-fit bg-white shadow-[0_10px_30px_rgba(0,0,0,0.3)] relative">
-                          {isLoading ? (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center p-12 text-center bg-white z-50">
-                              <div className="w-10 h-10 border-4 border-blue-600/30 border-t-blue-600 rounded-full animate-spin mb-4" />
-                              <p className="text-gray-400 text-xs font-bold uppercase tracking-widest">Đang xử lý tài liệu...</p>
-                            </div>
-                          ) : wordContent ? (
-                            <div className="p-16 prose prose-slate max-w-none prose-sm" dangerouslySetInnerHTML={{ __html: wordContent }} />
-                          ) : selectedFile.url ? (
-                            <div className="absolute inset-0 z-10 flex flex-col h-full bg-white">
-                              <iframe src={getPreviewUrl(selectedFile)} className="w-full h-full border-none" title="Document Viewer" />
-                            </div>
-                          ) : (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center p-12 text-center bg-gray-50">
-                              <AlertTriangle size={64} className="text-gray-200 mb-6" />
-                              <h3 className="text-lg font-bold text-gray-400 uppercase tracking-widest mb-2">Không thể hiển thị trực tiếp</h3>
-                              <p className="text-gray-400 text-xs max-w-xs font-medium">Vui lòng sử dụng tài liệu của bạn tải lên để xem nội dung.</p>
-                              <button onClick={() => fileInputRef.current?.click()} className="mt-6 px-6 py-2 bg-blue-600 text-white rounded text-xs font-bold uppercase shadow-lg shadow-blue-500/20">
-                                Tải file lên
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="flex-1 flex flex-col items-center justify-center text-gray-400 p-20">
-                      <div className="w-20 h-20 bg-gray-200/50 rounded-full flex items-center justify-center mb-6">
-                        <FileSearch size={32} className="opacity-40" />
-                      </div>
-                      <p className="text-sm font-bold uppercase tracking-[2px] text-gray-400">Chọn văn bản từ danh sách để xem chi tiết</p>
-                    </div>
-                  )}
-                </main>
-              </motion.div>
-        ) : mainView === 'dashboard' ? (
-          <motion.div 
-            key="dashboard"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="flex-1 overflow-y-auto bg-[#f8fafc] p-8 custom-scrollbar"
-          >
-            <div className="max-w-7xl mx-auto space-y-12 pb-16">
-              {renderDashboardModule()}
-            </div>
-          </motion.div>
-        ) : mainView === 'admin' ? (
-          <motion.div 
-            key="admin"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="flex-1 overflow-y-auto bg-[#f8fafc] p-8 custom-scrollbar"
-          >
-            <div className="max-w-7xl mx-auto pb-16">
-              <AdminMonitor />
-            </div>
-          </motion.div>
-        ) : (
-        <motion.div 
-          key="portal"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -10 }}
-          className="flex-1 flex flex-col overflow-y-auto custom-scrollbar"
-          style={{
-            backgroundColor: '#d0dbe6',
-            backgroundImage: `
-              radial-gradient(circle at 50% -10%, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.5) 40%, rgba(0, 0, 0, 0.05) 90%),
-              url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='80' viewBox='0 0 160 80'%3E%3Crect width='160' height='80' fill='%23c9d6e4'/%3E%3Cline x1='0' y1='39.5' x2='160' y2='39.5' stroke='%23adbccb' stroke-width='1.5'/%3E%3Cline x1='159.5' y1='0' x2='159.5' y2='40' stroke='%23adbccb' stroke-width='1.5'/%3E%3Cline x1='0' y1='79.5' x2='160' y2='79.5' stroke='%23adbccb' stroke-width='1.5'/%3E%3Cline x1='79.5' y1='40' x2='79.5' y2='80' stroke='%23adbccb' stroke-width='1.5'/%3E%3Cline x1='0' y1='0.5' x2='160' y2='0.5' stroke='%23f4f7fa' stroke-width='1.5'/%3E%3Cline x1='0.5' y1='0' x2='0.5' y2='40' stroke='%23f4f7fa' stroke-width='1.5'/%3E%3Cline x1='0' y1='40.5' x2='160' y2='40.5' stroke='%23f4f7fa' stroke-width='1.5'/%3E%3Cline x1='80.5' y1='40' x2='80.5' y2='80' stroke='%23f4f7fa' stroke-width='1.5'/%3E%3C/svg%3E")
-            `,
-            backgroundAttachment: 'fixed'
-          }}
+      {/* Tab Navigation */}
+      <div className="flex flex-wrap gap-2 border-b border-gray-800 mb-6 pb-2" id="main-tab-nav">
+        <button 
+          id="tab-schedule-btn"
+          className={`px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
+            activeTab === 'schedule' 
+              ? 'bg-[var(--acc)] text-slate-950 font-extrabold shadow-[0_0_12px_rgba(0,217,255,0.3)]' 
+              : 'text-[var(--txt2)] hover:bg-[var(--surf2)] hover:text-white'
+          }`}
+          onClick={() => setActiveTab('schedule')}
         >
-                {/* Hero section */}
-                <div className="bg-[#0f172a] py-8 px-6 relative overflow-hidden shrink-0">
-                  <img 
-                    src="https://i.ibb.co/jZ6dDJzT/z7116558150434-802a4bd8dff3b332930235031b93fc49.jpg" 
-                    className="absolute inset-0 w-full h-full object-cover opacity-70 brightness-[1.1] contrast-[1.25] saturate-[1.05]" 
-                    alt="Hero Background"
-                    referrerPolicy="no-referrer"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-r from-slate-950/90 via-slate-900/40 to-transparent" />
-                  <div className="relative z-10 max-w-7xl mx-auto">
-                    <h2 className="text-2xl md:text-3xl font-serif text-white leading-tight mb-2">
-                      TỔNG HỢP DỮ LIỆU <br />
-                      <span className="text-sky-300">PHÂN XƯỞNG VẬN HÀNH IALY</span>
-                    </h2>
+          🗓️ Tạo lịch trực thay ca nghỉ phép
+        </button>
+        <button 
+          id="tab-leave-btn"
+          className={`px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
+            activeTab === 'leave' 
+              ? 'bg-[var(--acc)] text-slate-950 font-extrabold shadow-[0_0_12px_rgba(0,217,255,0.3)]' 
+              : 'text-[var(--txt2)] hover:bg-[var(--surf2)] hover:text-white'
+          }`}
+          onClick={() => setActiveTab('leave')}
+        >
+          📝 Tạo đơn xin nghỉ phép
+        </button>
+        <button 
+          id="tab-swap-btn"
+          className={`px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
+            activeTab === 'swap' 
+              ? 'bg-[var(--acc)] text-slate-950 font-extrabold shadow-[0_0_12px_rgba(0,217,255,0.3)]' 
+              : 'text-[var(--txt2)] hover:bg-[var(--surf2)] hover:text-white'
+          }`}
+          onClick={() => setActiveTab('swap')}
+        >
+          ⇄ Đổi ca thủ công
+        </button>
+      </div>
 
-                    <p className="text-gray-400 text-xs md:text-sm leading-relaxed mb-6 max-w-2xl font-medium">
-                      NHÀ MÁY THUỶ ĐIỆN IALY & IALY MỞ RỘNG 
-                    </p>
+      {activeTab === 'leave' && (
+        <>
+          <div className="card" id="leave-creator-card">
+        <div className="ctitle">Tạo đơn xin nghỉ phép</div>
+        <p className="text-[13px] text-var(--txt2) mb-4">Sử dụng chức năng này để tạo nhanh văn bản "Đơn xin nghỉ phép".</p>
+        <div className="g2">
+          <div className="field">
+            <label>Chức danh</label>
+            <select value={leaveData.chucDanh} onChange={e => {
+              const cd = e.target.value;
+              setLeaveData({...leaveData, chucDanh: cd, name: ''});
+            }}>
+              {staffData.map(r => <option key={r[0]} value={r[0]}>{r[0]}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Kíp</label>
+            <select value={leaveData.kip} onChange={e => setLeaveData({...leaveData, kip: e.target.value, name: ''})}>
+              {[1, 2, 3, 4, 5].map(k => <option key={k} value={String(k)}>Kíp {k}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Họ và tên</label>
+            <input 
+              type="text" 
+              list="leave-staff-list"
+              placeholder="Chọn hoặc nhập tên"
+              value={leaveData.name} 
+              onChange={e => setLeaveData({...leaveData, name: e.target.value})} 
+            />
+            <datalist id="leave-staff-list">
+              {staffData.find(r => r[0] === leaveData.chucDanh)?.slice(1).filter(Boolean).map(name => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+          </div>
+          <div className="field">
+            <label>Sinh năm</label>
+            <input 
+              type="number" 
+              value={leaveData.birthYear} 
+              onChange={e => setLeaveData({...leaveData, birthYear: e.target.value})} 
+            />
+          </div>
+          <div className="field">
+            <label>Ngày bắt đầu nghỉ</label>
+            <input 
+              type="date" 
+              value={leaveData.startDate} 
+              onChange={e => setLeaveData({...leaveData, startDate: e.target.value})} 
+            />
+          </div>
+          <div className="field">
+            <label>Ngày kết thúc nghỉ</label>
+            <input 
+              type="date" 
+              value={leaveData.endDate} 
+              onChange={e => setLeaveData({...leaveData, endDate: e.target.value})} 
+            />
+          </div>
+          <div className="field">
+            <label>Chế độ phép năm</label>
+            <input 
+              type="number" 
+              value={leaveData.leaveYear} 
+              onChange={e => setLeaveData({...leaveData, leaveYear: e.target.value})} 
+            />
+          </div>
+          <div className="field col-span-2">
+            <label>Lý do nghỉ</label>
+            <input 
+              type="text" 
+              value={leaveData.reason} 
+              onChange={e => setLeaveData({...leaveData, reason: e.target.value})} 
+            />
+          </div>
+          <div className="field">
+            <label>Điện thoại liên hệ</label>
+            <input 
+              type="text" 
+              value={leaveData.phone} 
+              onChange={e => setLeaveData({...leaveData, phone: e.target.value})} 
+            />
+          </div>
+          <div className="field">
+            <label>Địa điểm</label>
+            <input 
+              type="text" 
+              value={leaveData.location} 
+              onChange={e => setLeaveData({...leaveData, location: e.target.value})} 
+            />
+          </div>
+        </div>
+        <div className="flex gap-3 mt-4 flex-wrap">
+          <button className="btn btn-primary flex-1 min-w-[200px]" onClick={handlePreviewLeave} disabled={isProcessing || !leaveData.name}>
+            {isProcessing ? <span className="spin mr-2"></span> : '📝'} Xem trước Đơn Nghỉ Phép
+          </button>
+          <button className="btn btn-secondary flex-1 min-w-[150px]" onClick={handleExportLeave} disabled={!leaveData.name}>
+            📥 Xuất File Word
+          </button>
+        </div>
+      </div>
+        </>
+      )}
+      {/* End Leave Tab */}
 
-                    <div className="flex flex-wrap gap-2.5">
-                      {[
-                        { id: 'kt', label: 'Kỹ Thuật', icon: '⚙️', color: 'red' },
-                        { id: 'qt', label: 'Quản Trị', icon: '📊', color: 'grn' },
-                        { id: 'at', label: 'An Toàn', icon: '🛡️', color: 'blu' }
-                      ].map((tab) => (
-                        <button
-                          key={tab.id}
-                          onClick={() => setPortalTab(tab.id as any)}
-                          className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold text-white transition-all border ${
-                            portalTab === tab.id 
-                              ? `bg-ialy-${tab.color}/40 border-ialy-${tab.color} shadow-md ring-2 ring-ialy-${tab.color}/20` 
-                              : 'bg-white/5 border-white/10 hover:bg-white/20'
-                          }`}
-                        >
-                          <span className="text-lg">{tab.icon}</span>
-                          {tab.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Content section */}
-                <div className="p-6 max-w-7xl mx-auto w-full">
-                  <AnimatePresence mode="wait">
-                    {portalTab === 'kt' && (
-                      <motion.div key="kt" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
-                        <div className="flex items-center gap-3 mb-4">
-                          <div className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center text-base text-red-600 shadow-sm border border-red-200/60 backdrop-blur-sm">⚙️</div>
-                          <div className="flex flex-col">
-                            
-                            <h3 className="text-base font-extrabold text-slate-800 tracking-tight">Kỹ Thuật</h3>
-                          </div>
-                        </div>
-
-                        {dynamicPortalItems.filter(i => i.category === 'kt').map((item) => (
-                          <AccordionCard 
-                            key={item.id} 
-                            id={item.id} 
-                            num={item.num} 
-                            title={item.title} 
-                            badge={item.badge} 
-                            color={item.color} 
-                            href={item.href}
-                            isOpen={true}
-                            onToggle={() => {}}
-                          >
-                            {item.subItems?.map((sub: any, sIdx: number) => {
-                              const subId = `${item.id}-${sIdx}`;
-                              if (sub.childItems && sub.childItems.length > 0) {
-                                return (
-                                  <SubAccordion 
-                                    key={sIdx}
-                                    id={subId}
-                                    icon={sub.icon}
-                                    label={sub.label}
-                                    isOpen={true}
-                                    onToggle={() => {}}
-                                    color={item.color}
-                                  >
-                                    {sub.childItems.map((child: any, cIdx: number) => (
-                                      <LinkRow key={cIdx} icon={child.icon} label={child.label} href={child.href} color={item.color} level={3} />
-                                    ))}
-                                  </SubAccordion>
-                                );
-                              }
-                              return (
-                                <LinkRow key={sIdx} icon={sub.icon} label={sub.label} href={sub.href} color={item.color} level={2} />
-                              );
-                            })}
-                          </AccordionCard>
-                        ))}
-                      </motion.div>
-                    )}
-
-                    {portalTab === 'qt' && (
-                      <motion.div key="qt" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
-                         <div className="flex items-center gap-3 mb-4">
-                            <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center text-base text-emerald-600 shadow-sm border border-green-200/60 backdrop-blur-sm">📊</div>
-                            <div className="flex flex-col">
-                              <h3 className="text-base font-extrabold text-slate-800 tracking-tight">Quản Trị</h3>
-                            </div>
-                          </div>
-
-                          {dynamicPortalItems.filter(i => i.category === 'qt').map((item) => (
-                            <AccordionCard 
-                              key={item.id} 
-                              id={item.id} 
-                              num={item.num} 
-                              title={item.title} 
-                              badge={item.badge} 
-                              color={item.color} 
-                              href={item.href}
-                              isOpen={true}
-                              onToggle={() => {}}
-                            >
-                              {item.subItems?.map((sub: any, sIdx: number) => {
-                                const subId = `${item.id}-${sIdx}`;
-                                if (sub.childItems && sub.childItems.length > 0) {
-                                  return (
-                                    <SubAccordion 
-                                      key={sIdx}
-                                      id={subId}
-                                      icon={sub.icon}
-                                      label={sub.label}
-                                      isOpen={true}
-                                      onToggle={() => {}}
-                                      color={item.color}
-                                    >
-                                      {sub.childItems.map((child: any, cIdx: number) => (
-                                        <LinkRow key={cIdx} icon={child.icon} label={child.label} href={child.href} color={item.color} level={3} />
-                                      ))}
-                                    </SubAccordion>
-                                  );
-                                }
-                                return (
-                                  <LinkRow key={sIdx} icon={sub.icon} label={sub.label} href={sub.href} color={item.color} level={2} />
-                                );
-                              })}
-                            </AccordionCard>
-                          ))}
-                      </motion.div>
-                    )}
-
-                    {portalTab === 'at' && (
-                      <motion.div key="at" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
-                        <div className="flex items-center gap-3 mb-4">
-                            <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center text-base text-blue-600 shadow-sm border border-blue-200/60 backdrop-blur-sm">🛡️</div>
-                            <div className="flex flex-col">
-                              <h3 className="text-base font-extrabold text-slate-800 tracking-tight">An Toàn</h3>
-                            </div>
-                        </div>
-
-                        {dynamicPortalItems.filter(i => i.category === 'at').map((item) => (
-                          <AccordionCard 
-                            key={item.id} 
-                            id={item.id} 
-                            num={item.num} 
-                            title={item.title} 
-                            badge={item.badge} 
-                            color={item.color} 
-                            href={item.href}
-                            isOpen={true}
-                            onToggle={() => {}}
-                          >
-                            {item.subItems?.map((sub: any, sIdx: number) => {
-                              const subId = `${item.id}-${sIdx}`;
-                              if (sub.childItems && sub.childItems.length > 0) {
-                                  return (
-                                    <SubAccordion 
-                                      key={sIdx}
-                                      id={subId}
-                                      icon={sub.icon}
-                                      label={sub.label}
-                                      isOpen={true}
-                                      onToggle={() => {}}
-                                      color={item.color}
-                                    >
-                                      {sub.childItems.map((child: any, cIdx: number) => (
-                                        <LinkRow key={cIdx} icon={child.icon} label={child.label} href={child.href} color={item.color} level={3} />
-                                      ))}
-                                    </SubAccordion>
-                                  );
-                                }
-                                return (
-                                  <LinkRow key={sIdx} icon={sub.icon} label={sub.label} href={sub.href} color={item.color} level={2} />
-                                );
-                              })}
-                            </AccordionCard>
-                          ))}
-                        </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                <EvnLogoWidget />
-
-                <footer className="mt-auto border-t border-slate-300/30 py-6 px-8 bg-white/40 backdrop-blur-md flex items-center justify-between shrink-0">
-                  <span className="text-[10px] uppercase font-black text-slate-600 tracking-widest leading-none">Phân Xưởng Vận Hành Ialy</span>
-                </footer>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <AnimatePresence>
-            {notification && (
-              <motion.div 
-                initial={{ y: -50, opacity: 0 }} 
-                animate={{ y: 20, opacity: 1 }} 
-                exit={{ y: -50, opacity: 0 }}
-                className={`fixed top-4 left-1/2 -translate-x-1/2 z-[200] px-6 py-3 rounded shadow-2xl flex items-center gap-3 border bg-white ${notification.type === 'success' ? 'border-green-100' : 'border-red-100'}`}
-              >
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${notification.type === 'success' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
-                  {notification.type === 'success' ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
-                </div>
-                <span className={`text-[11px] font-black tracking-widest uppercase ${notification.type === 'success' ? 'text-green-700' : 'text-red-700'}`}>
-                  {notification.message}
+      {activeTab === 'schedule' && (
+        <>
+          <div className="card" id="upload-leave-card">
+            <div className="ctitle">Tải lên đơn xin nghỉ phép</div>
+            <div className="p-4 border-2 border-dashed border-var(--acc-light) rounded-xl text-center hover:bg-var(--acc-light) transition-colors cursor-pointer relative">
+              <input 
+                type="file" 
+                accept=".docx" 
+                multiple
+                onChange={handleFileUpload} 
+                className="absolute inset-0 opacity-0 cursor-pointer"
+                disabled={isParsing}
+              />
+              <div className="flex flex-col items-center gap-2">
+                <span className="text-2xl">{isParsing ? '⌛' : '📄'}</span>
+                <span className="text-[13px] font-medium">
+                  {isParsing ? 'Đang xử lý...' : 'Nhấn để chọn hoặc kéo thả các file Word (.docx)'}
                 </span>
-              </motion.div>
-            )}
-          </AnimatePresence>
+                <span className="text-[11px] text-var(--txt2)">Hệ thống sẽ lấy thông tin từ các đơn nghỉ phép </span>
+              </div>
+            </div>
+          </div>
 
-          <AnimatePresence>
-            {fileToDelete && (
-              <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                <motion.div 
-                  initial={{ scale: 0.9, opacity: 0 }} 
-                  animate={{ scale: 1, opacity: 1 }}
-                  exit={{ scale: 0.9, opacity: 0 }}
-                  className="w-full max-w-sm bg-white rounded-[2rem] p-8 text-center shadow-2xl border border-slate-100"
+          <div className="card" id="schedule-planner-card">
+        <div className="ctitle">Thông tin nghỉ phép
+        <button
+  className="btn-ex btn-word"
+  onClick={() => window.open("https://script.google.com/macros/s/AKfycbwo8YVh0YbMLg3KSMoULVRG3moktSEodmY-H3ppk1ZJ0iia6hKxC-xkCKi6-WtKlBpG/exec", "_blank")}
+>
+  Bảng báo cơm ca
+</button>
+</div>
+        {alert && <div className={`alert ${alert.startsWith('✅') ? 'asuc' : 'aerr'}`}>{alert}</div>}
+        
+        {isGoogleAuth && (
+          <div className="mb-6 p-4 border border-var(--acc-light) rounded-xl bg-var(--acc-light-5) hover:border-var(--acc) transition-all">
+            <div className="flex items-center justify-between mb-3 border-b pb-2 border-var(--acc-light) flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-var(--acc) uppercase tracking-wider flex items-center gap-1.5">
+                  📥 Đơn nghỉ chờ xếp lịch đi ca ({waitingLeaves.length})
+                </span>
+                {isLoadingWaitingLeaves && <div className="spin w-3.5 h-3.5 border-2 border-t-transparent border-var(--acc) rounded-full animate-spin"></div>}
+              </div>
+              <div className="flex gap-2 select-none">
+                <button 
+                  className="px-2 py-1 text-xs bg-white text-var(--acc) border border-var(--acc-light) rounded hover:bg-var(--acc-light-10) font-medium cursor-pointer transition-colors"
+                  onClick={fetchWaitingLeaves}
+                  disabled={isLoadingWaitingLeaves}
                 >
-                  <div className="w-16 h-16 bg-red-50 text-red-500 rounded-2xl flex items-center justify-center mx-auto mb-6">
-                    <Trash2 size={32} />
-                  </div>
-                  <h3 className="text-xl font-black text-slate-900 mb-2 uppercase tracking-tight">Xác nhận xoá</h3>
-                  <p className="text-sm text-slate-500 font-medium mb-8 leading-relaxed">
-                    Bạn có chắc chắn muốn xoá thông báo <br/>
-                    <span className="text-slate-900 font-bold">"{fileToDelete.name}"</span>?
-                    <br/>Hành động này không thể hoàn tác.
-                  </p>
-                  <div className="grid grid-cols-2 gap-4">
+                  🔄 Cập nhật
+                </button>
+                {selectedWaitingLeaveIds.length > 0 && (
+                  <>
                     <button 
-                      onClick={() => setFileToDelete(null)}
-                      className="py-3.5 bg-slate-100 rounded-2xl text-[11px] font-black uppercase text-slate-500 hover:bg-slate-200 transition-colors"
+                      className="px-2.5 py-1 text-xs bg-[#4f46e5] text-white rounded hover:bg-[#4338ca] font-bold cursor-pointer transition-colors"
+                      onClick={applyWaitingLeavesToForm}
                     >
-                      Hủy bỏ
+                      ⚡ Áp dụng {selectedWaitingLeaveIds.length} người
                     </button>
                     <button 
-                      onClick={confirmDeleteFile}
-                      className="py-3.5 bg-red-600 rounded-2xl text-[11px] font-black uppercase text-white hover:bg-red-700 transition-all shadow-lg shadow-red-200"
+                      className="px-2.5 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 font-bold cursor-pointer transition-colors flex items-center gap-1"
+                      onClick={() => handleDeleteWaitingLeaves(selectedWaitingLeaveIds)}
                     >
-                      Xoá vĩnh viễn
+                      <Trash2 size={12} /> Xoá {selectedWaitingLeaveIds.length} đơn
                     </button>
-                  </div>
-                </motion.div>
+                  </>
+                )}
+              </div>
+            </div>
+            
+            {waitingLeaves.length === 0 ? (
+              <p className="text-[12px] text-var(--txt2) italic">Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca trên Google Sheets.</p>
+            ) : (
+              <div className="max-h-[220px] overflow-y-auto pr-1">
+                <div className="flex flex-col gap-2">
+                  {waitingLeaves.map((leave) => {
+                    const isSelected = selectedWaitingLeaveIds.includes(leave.id);
+                    return (
+                      <div 
+                        key={leave.id} 
+                        className={`p-2.5 rounded-lg border text-[12px] flex items-start gap-2.5 transition-all cursor-pointer ${
+                          isSelected ? 'border-[var(--acc)] bg-cyan-50/90 shadow-sm ring-1 ring-[var(--acc)]' : 'border-slate-200 bg-white hover:border-slate-300 shadow-sm'
+                        }`}
+                        onClick={() => {
+                          setSelectedWaitingLeaveIds(prev => 
+                            prev.includes(leave.id) 
+                              ? prev.filter(id => id !== leave.id) 
+                              : [...prev, leave.id]
+                          );
+                        }}
+                      >
+                        <input 
+                          type="checkbox" 
+                          checked={isSelected}
+                          onChange={() => {}} // handled by parent div click
+                          className="mt-0.5 accent-[var(--acc)] cursor-pointer"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-bold text-slate-950 text-[13px]">{leave.name}</span>
+                            <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+                              <span className="text-[10px] bg-yellow-100 text-yellow-800 border border-yellow-200 px-1.5 py-0.5 rounded-md font-mono font-medium">{leave.id.substring(0, 14)}...</span>
+                              <button 
+                                className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                                title="Xóa đơn này"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteWaitingLeaves([leave.id], leave.name);
+                                }}
+                              >
+                                <Trash2 size={13} className="text-slate-400 hover:text-red-600 transition-colors" />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-1 text-slate-500">
+                            <div>Kíp: <span className="font-semibold text-slate-800">Kíp {leave.kip}</span></div>
+                            <div>Chức danh: <span className="font-semibold text-slate-800">{leave.chucDanh}</span></div>
+                            <div className="col-span-2">Thời gian: <span className="font-semibold text-slate-800">{fmtVN(new Date(leave.startDate))} → {fmtVN(new Date(leave.endDate))}</span></div>
+                            <div className="col-span-2">Lý do: <span className="font-semibold text-slate-800 truncate block" title={leave.reason}>{leave.reason}</span></div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
-          </AnimatePresence>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════
-// UI COMPONENTS FOR THE PORTAL
-// ═══════════════════════════════════════
-
-function AccordionCard({ id, num, title, badge, color, children, isOpen, onToggle, href }: any) {
-  const content = (
-    <div 
-      className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4.5 py-3 bg-slate-100/50 border-b border-slate-200/60"
-    >
-      <div className="flex items-center gap-4">
-        <span className="text-[13px] font-extrabold text-slate-800 tracking-tight uppercase">{title}</span>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="bg-white/95 backdrop-blur-md border border-slate-300 rounded-2xl overflow-hidden shadow-md group">
-      {href ? (
-        <a href={href} target="_blank" rel="noopener noreferrer" className="block hover:bg-slate-50/50 transition-colors">
-          {content}
-        </a>
-      ) : (
-        <>
-          {content}
-          <div className="p-3.5 flex flex-col gap-3 bg-slate-50/10">
-            {children}
+            <p className="text-[10px] text-var(--txt2) mt-2 italic">* Chọn các đơn muốn xếp lịch và bấm "Áp dụng ... người" để tự động điền nhanh các thông tin.</p>
           </div>
+        )}
+
+        <div className="g2">
+          <div className="field">
+            <label>Ngày bắt đầu nghỉ</label>
+            <input type="date" value={ngayBatDau} onChange={e => setNgayBatDau(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Ngày kết thúc nghỉ</label>
+            <input type="date" value={ngayKetThuc} onChange={e => setNgayKetThuc(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Chức danh người nghỉ</label>
+            <select value={chucDanh} onChange={e => setChucDanh(e.target.value)}>
+              <option value="">-- Chọn chức danh --</option>
+              {staffData.map(r => <option key={r[0]} value={r[0]}>{r[0]}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Kíp nghỉ</label>
+            <select value={kipNghi} onChange={e => setKipNghi(e.target.value)}>
+              <option value="">-- Chọn kíp --</option>
+              {[1, 2, 3, 4, 5].map(k => <option key={k} value={k}>Kíp {k}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="divider"></div>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-[12px] text-var(--txt2) font-semibold uppercase tracking-wider">
+            Người nghỉ đồng thời <span className="font-normal">(có thể khác chức danh)</span>
+          </span>
+          <button className="staff-toggle font-bold text-[13px]" onClick={addConcurrentLeave}>+ Thêm người nghỉ</button>
+        </div>
+
+        <div id="concurrent-list">
+          {additionalLeaves.map((leave, idx) => (
+            <div key={idx} className="concurrent-item">
+              <div className="absolute top-2 right-2.5">
+                <button onClick={() => removeConcurrentLeave(idx)} className="text-var(--acc3) cursor-pointer text-lg leading-none" title="Xóa">✕</button>
+              </div>
+              <div className="text-[11px] font-bold text-var(--acc) uppercase tracking-wider mb-3">Người nghỉ #{idx + 2}</div>
+              <div className="g2">
+                <div className="field">
+                  <label>Chức danh</label>
+                  <select value={leave.chucDanh} onChange={e => updateConcurrentLeave(idx, 'chucDanh', e.target.value)}>
+                    <option value="">-- Chức danh --</option>
+                    {staffData.map(r => <option key={r[0]} value={r[0]}>{r[0]}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Kíp nghỉ</label>
+                  <select value={leave.kip} onChange={e => updateConcurrentLeave(idx, 'kip', e.target.value)}>
+                    <option value="">-- Kíp --</option>
+                    {[1, 2, 3, 4, 5].map(k => <option key={k} value={k}>Kíp {k}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Ngày bắt đầu</label>
+                  <input type="date" value={leave.start} onChange={e => updateConcurrentLeave(idx, 'start', e.target.value)} />
+                </div>
+                <div className="field">
+                  <label>Ngày kết thúc</label>
+                  <input type="date" value={leave.end} onChange={e => updateConcurrentLeave(idx, 'end', e.target.value)} />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <button className="btn btn-primary" onClick={taoLich} disabled={isProcessing}>
+          {isProcessing ? <span className="spin mr-2"></span> : '⚡'} Tạo Lịch Thay Ca
+        </button>
+      </div>
+
+      <div className="card" id="staff-roster-card">
+        <div className="ctitle">
+          Nhân sự của kíp 
+          <div className="flex gap-2">
+            <button className="staff-toggle" onClick={() => setShowStaff(!showStaff)}>
+              {showStaff ? 'Thu gọn ▲' : 'Chỉnh sửa ▼'}
+            </button>
+            <button className="staff-toggle" onClick={() => setShowSignatureManager(!showSignatureManager)}>
+              {showSignatureManager ? '✍️ Ẩn chữ ký' : '✍️ Quản lý chữ ký'}
+            </button>
+          </div>
+        </div>
+        <p className="text-[13px] text-var(--txt2)">Nhấn "Chỉnh sửa" để cập nhật tên nhân viên hoặc "Quản lý chữ ký" để tải lên ảnh chữ ký.</p>
+        
+        {showSignatureManager && (
+          <div className="mb-6">
+            <SignatureManager 
+              staffList={Array.from(new Set(staffData.flatMap(row => row.slice(1)).filter(Boolean)))} 
+              signatures={signatures}
+              onSignaturesChange={setSignatures} 
+            />
+          </div>
+        )}
+
+        {showStaff && (
+          <div className="staff-wrap">
+            <table className="st">
+              <thead>
+                <tr>
+                  <th>Chức danh</th>
+                  <th>Kíp 1</th>
+                  <th>Kíp 2</th>
+                  <th>Kíp 3</th>
+                  <th>Kíp 4</th>
+                  <th>Kíp 5</th>
+                </tr>
+              </thead>
+              <tbody>
+                {staffData.map((row, r) => (
+                  <tr key={r}>
+                    <td>{row[0]}</td>
+                    {[1, 2, 3, 4, 5].map(c => (
+                      <td key={c}>
+                        <input 
+                          value={row[c] || ''} 
+                          onChange={e => handleUpdateStaff(r, c, e.target.value)}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      {/* End Schedule Tab Content */}
         </>
+      )}
+
+      {activeTab === 'swap' && (
+        <div className="card" id="manual-swap-card">
+          <div className="ctitle">Tạo lịch đổi ca thủ công</div>
+        <p className="text-[13px] text-var(--txt2) mb-4">Sử dụng để tạo lịch đổi ca giữa 2 người.</p>
+        <div className="g2">
+          <div className="field">
+            <label>Chức danh</label>
+            <select value={swapChucDanh} onChange={e => {
+              setSwapChucDanh(e.target.value);
+              setSwapData({...swapData, person1: '', person2: ''});
+            }}>
+              {staffData.map(r => <option key={r[0]} value={r[0]}>{r[0]}</option>)}
+            </select>
+          </div>
+          <div className="field"></div>
+          <div className="field">
+            <label>Ngày đổi ca 1</label>
+            <input 
+              type="date" 
+              value={swapData.date1} 
+              onChange={e => setSwapData({...swapData, date1: e.target.value})} 
+            />
+          </div>
+          <div className="field">
+            <label>Ngày đổi ca 2</label>
+            <input 
+              type="date" 
+              value={swapData.date2} 
+              onChange={e => setSwapData({...swapData, date2: e.target.value})} 
+            />
+          </div>
+          <div className="field">
+            <label>Người đổi ca (P1)</label>
+            <input 
+              type="text" 
+              list="staff-list"
+              placeholder="Chọn hoặc nhập tên"
+              value={swapData.person1} 
+              onChange={e => setSwapData({...swapData, person1: e.target.value})} 
+            />
+          </div>
+          <div className="field">
+            <label>Người đi ca thay (P2)</label>
+            <input 
+              type="text" 
+              list="staff-list"
+              placeholder="Chọn hoặc nhập tên"
+              value={swapData.person2} 
+              onChange={e => setSwapData({...swapData, person2: e.target.value})} 
+            />
+          </div>
+          <datalist id="staff-list">
+            {staffData.find(r => r[0] === swapChucDanh)?.slice(1).filter(Boolean).map(name => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+          <div className="field">
+            <label>Ca của P1 (nghỉ)</label>
+            <select value={swapData.shift1} onChange={e => setSwapData({...swapData, shift1: e.target.value})}>
+              <option value="N">Ca N</option>
+              <option value="C">Ca C</option>
+              <option value="K">Ca K</option>
+              <option value="None">Không</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>Ca của P2 (nghỉ)</label>
+            <select value={swapData.shift2} onChange={e => setSwapData({...swapData, shift2: e.target.value})}>
+              <option value="N">Ca N</option>
+              <option value="C">Ca C</option>
+              <option value="K">Ca K</option>
+              <option value="None">Không</option>
+            </select>
+          </div>
+        </div>
+        <div className="flex gap-3 mt-4">
+          <button className="btn btn-primary flex-1" onClick={handlePreviewSwap} disabled={isProcessing || !swapData.person1 || !swapData.person2}>
+            {isProcessing ? <span className="spin mr-2"></span> : '📝'} Xem trước Lịch Đổi Ca
+          </button>
+          <button className="btn btn-secondary flex-1" onClick={handleExportSwap} disabled={!swapData.person1 || !swapData.person2}>
+            📥 Xuất File Word
+          </button>
+        </div>
+      </div>
+      )}
+
+      {activeTab === 'schedule' && currentResult && (
+        <div id="results">
+          <div className="card">
+            <div className="res-hdr">
+              <div className="ctitle mb-0">Kết quả phân công</div>
+              <div className="ex-row flex-wrap gap-2">
+                {isGoogleAuth && selectedWaitingLeaveIds.length > 0 && (
+                  <button className="btn-ex btn-indigo font-medium flex items-center justify-center transition-colors" onClick={handleExportAllZipAndUpdateStatus} disabled={isProcessing}>
+                    {isProcessing ? <span className="spin spinw mr-2"></span> : '📝'} Tạo lịch thay ca và các đơn nghỉ phép
+                  </button>
+                )}
+                <button className="btn-ex btn-word" onClick={handlePreviewWord} disabled={isProcessing}>
+                  {isProcessing ? <span className="spin spinw mr-2"></span> : '📝'} Xem trước Word
+                </button>
+                <button className="btn-ex btn-word" onClick={handleExportWord} disabled={isProcessing}>
+                  {isProcessing ? <span className="spin spinw mr-2"></span> : '📝'} Xuất Word
+                </button>
+                {loadingAuth ? (
+                  <button className="btn-ex btn-gray cursor-wait" disabled>
+                    <span className="spin mr-2 border-gray-400"></span> Đang kiểm tra...
+                  </button>
+                ) : !isGoogleAuth ? (
+                  <button className="btn-ex btn-google" onClick={handleConnectGoogle}>
+                    🔗 Kết nối Google Sheets
+                  </button>
+                ) : (
+                  <div className="flex gap-2">
+                    <button 
+                      className={`btn-ex ${isUpdatingSheets ? 'btn-gray' : 'btn-sheets'}`} 
+                      onClick={updateGoogleSheets}
+                      disabled={isUpdatingSheets}
+                    >
+                      {isUpdatingSheets ? <span className="spin spinw mr-2"></span> : '🔄'} 
+                      {isUpdatingSheets ? 'Đang đồng bộ...' : 'Đồng bộ Google Sheets'}
+                    </button>
+                    <button 
+                      className="btn-ex btn-danger"
+                      onClick={() => {
+                        setConfirmModal({
+                          isOpen: true,
+                          title: "Ngắt kết nối Google Sheets",
+                          message: "Bạn có chắc chắn muốn ngắt kết nối Google Sheets? Bạn sẽ cần đăng nhập lại để đồng bộ và truy xuất dữ liệu.",
+                          confirmText: "Ngắt kết nối",
+                          cancelText: "Hủy",
+                          isDanger: true,
+                          onConfirm: () => {
+                            setIsGoogleAuth(false);
+                            setAlert('Đã ngắt kết nối. Vui lòng kết nối lại để cập nhật.');
+                          }
+                        });
+                      }}
+                      title="Ngắt kết nối và đăng nhập lại"
+                    >
+                      🚫
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="igrid">
+              {currentResult.isMulti ? (
+                <>
+                  <div className="iitem"><div className="ilbl">Chức danh</div><div className="ival">{currentResult.chucDanh}</div></div>
+                  <div className="iitem"><div className="ilbl">Số người nghỉ</div><div className="ival">{currentResult.allResults.length} người</div></div>
+                  <div className="iitem"><div className="ilbl">Người nghỉ</div><div className="ival">{currentResult.allResults.map((r: any) => `${r.ten} (K${r.kip})`).join(' | ')}</div></div>
+                  <div className="iitem"><div className="ilbl">Tổng ca thay</div><div className="ival">{allRows.length} ca</div></div>
+                </>
+              ) : (
+                <>
+                  <div className="iitem"><div className="ilbl">Người nghỉ</div><div className="ival">{currentResult.ten}</div></div>
+                  <div className="iitem"><div className="ilbl">Chức danh</div><div className="ival">{currentResult.chucDanh}</div></div>
+                  <div className="iitem"><div className="ilbl">Kíp nghỉ</div><div className="ival">Kíp {currentResult.kip}</div></div>
+                  <div className="iitem"><div className="ilbl">Thời gian</div><div className="ival">{fmtVN(currentResult.start)} → {fmtVN(currentResult.end)}</div></div>
+                  <div className="iitem"><div className="ilbl">Số ngày</div><div className="ival">{Math.round((currentResult.end - currentResult.start) / 86400000) + 1} ngày</div></div>
+                  <div className="iitem"><div className="ilbl">Ca cần thay</div><div className="ival">{allRows.length} ca</div></div>
+                </>
+              )}
+            </div>
+
+            {currentResult.isMulti && Object.keys(coverStats).length > 0 && (
+              <div className="distrib-box">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-var(--acc) uppercase tracking-wider">Phân bố ca thay</span>
+                  {isEvenDistribution() ? (
+                    <span className="text-[11px] color-[#22c55e] font-semibold">✓ Phân bố đều</span>
+                  ) : (
+                    <span className="text-[11px] color-var(--C) font-semibold">⚠ Chưa đều</span>
+                  )}
+                </div>
+                <div className="distrib-grid">
+                  {Object.keys(coverStats).sort().map(kip => (
+                    <div key={kip} className="distrib-item">
+                      <div className="text-[13px] font-bold text-var(--txt)">
+                        Kíp {kip} 
+                        <span className="text-[11px] font-normal text-var(--txt2) ml-1">
+                          ({Object.entries(coverStats[+kip].byCD).map(([cd, count]) => `${cd}: ${count}`).join(', ')})
+                        </span>
+                      </div>
+                      <div className="mt-1.5 flex gap-1.5 items-center flex-wrap">
+                        {coverStats[+kip].N > 0 && <span className="badge bN">N ×{coverStats[+kip].N}</span>}
+                        {coverStats[+kip].C > 0 && <span className="badge bC">C ×{coverStats[+kip].C}</span>}
+                        {coverStats[+kip].K > 0 && <span className="badge bK">K ×{coverStats[+kip].K}</span>}
+                        <span className="text-var(--acc) font-bold text-[12px]">= {coverStats[+kip].total} ca</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="rt-wrap">
+              <table className="rt">
+                <thead>
+                  <tr>
+                    <th>STT</th>
+                    <th>Ngày</th>
+                    <th>Ca</th>
+                    <th>Người nghỉ (Kíp)</th>
+                    <th>Kíp thay</th>
+                    <th>Người đi thay</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={7}>
+                        <div className="no-res">📅 Không có ca làm việc nào trong khoảng thời gian này.</div>
+                      </td>
+                    </tr>
+                  ) : (
+                    allRows.map((row, i) => {
+                      const ds = fmtVN(row.ngay);
+                      const isNewDate = i === 0 || fmtVN(allRows[i - 1].ngay) !== ds;
+                      return (
+                        <tr key={i} className={`${isNewDate && i > 0 ? 'date-sep' : ''} ${row.isConflict ? 'conflict-row' : ''}`}>
+                          <td className="text-var(--txt2) font-mono">{i + 1}</td>
+                          <td>
+                            {isNewDate && (
+                              <>
+                                <span className="font-semibold">{ds}</span>
+                                <span className="text-var(--txt2) text-[11px] ml-1">{dayN(row.ngay)}</span>
+                                {row.isOverlapDay && (
+                                  <div className="text-[10px] text-var(--acc) font-bold">👥 Ngày trùng nghỉ</div>
+                                )}
+                              </>
+                            )}
+                          </td>
+                          <td><span className={`badge b${row.ca}`}>{row.ca}</span></td>
+                          <td className="text-[12px] text-var(--txt2)">
+                            <div className="font-bold text-[10px] text-var(--acc) mb-0.5 uppercase">{row.chucDanh}</div>
+                            {row.isSwap ? (
+                              <>
+                                <span className="text-[#22c55e] text-[11px]">đổi ca</span>
+                                <br />
+                                {row.relievedTen || row.absentTen}
+                                <br />
+                                <span className="text-[10px]">Kíp {row.relievedKip || row.absentKip}</span>
+                              </>
+                            ) : row.isCKChain ? (
+                              <>
+                                <span className="text-[#a855f7] text-[11px]">thay ca</span>
+                                <br />
+                                {row.absentTen}
+                                <br />
+                                <span className="text-[10px]">Kíp {row.absentKip}</span>
+                              </>
+                            ) : (
+                              <>
+                                {row.absentTen}
+                                <br />
+                                <span className="text-[10px]">Kíp {row.absentKip}</span>
+                              </>
+                            )}
+                          </td>
+                          <td className="text-var(--txt2)">Kíp {row.kipThay}</td>
+                          <td className="font-semibold text-var(--acc2)">{row.nguoiThay}</td>
+                          <td className="max-w-[140px]">
+                            {row.isSwap ? (
+                              <>
+                                <span className="conflict-badge bg-[#22c55e1a] text-[#22c55e] border-[#22c55e4d]">⇄ Đổi ca</span>
+                                {row.conflictNote && (
+                                  <div className="text-[10px] text-var(--txt2)">{row.conflictNote}</div>
+                                )}
+                              </>
+                            ) : row.isCKChain ? (
+                              <>
+                                <span className="conflict-badge bg-[#a855f71a] text-[#a855f7] border-[#a855f74d]">⥵ C→K</span>
+                                <br />
+                                <span className="text-[10px] text-var(--txt2)">Thay do ràng buộc Ca C→K</span>
+                              </>
+                            ) : row.isConflict ? (
+                              <>
+                                <span className="conflict-badge">△ Điều chỉnh</span>
+                                {row.conflictNote && (
+                                  <div className="text-[10px] text-var(--txt2)">{row.conflictNote}</div>
+                                )}
+                              </>
+                            ) : null}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="legend">
+              <div className="legend-item"><span className="badge bN">N</span>Ca Ngày (08:00–16:00)</div>
+              <div className="legend-item"><span className="badge bC">C</span>Ca Chiều (16:00–22:20)</div>
+              <div className="legend-item"><span className="badge bK">K</span>Ca Đêm (22:20–08:00)</div>
+            </div>
+          </div>
+        </div>
+      )}
+      {showPreview && (
+        <div className="modal-overlay" onClick={() => setShowPreview(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{isPreviewingSwap ? 'Xem trước Lịch Đổi Ca' : isPreviewingLeave ? 'Xem trước Đơn Nghỉ Phép' : 'Xem trước Lịch Trực Thay Ca'}</h3>
+              <button className="close-btn" onClick={() => setShowPreview(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div ref={previewRef} className="docx-container"></div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowPreview(false)}>Đóng</button>
+              {isPreviewingSwap ? (
+                <button className="btn btn-primary" onClick={handleExportSwap}>Tải xuống Word</button>
+              ) : isPreviewingLeave ? (
+                <>
+                  <button 
+                    className={`btn ${isSavingLeaveToSheets ? 'bg-gray-400 cursor-wait' : 'bg-[#34a853] text-white hover:bg-[#2c8e46] cursor-pointer'} font-medium rounded-lg px-4 py-2 text-sm flex items-center justify-center gap-1.5`}
+                    onClick={saveLeaveToGoogleSheets}
+                    disabled={isSavingLeaveToSheets || !leaveData.name}
+                  >
+                    {isSavingLeaveToSheets ? <span className="spin spinw mr-2"></span> : '☁️ '}
+                    {isSavingLeaveToSheets ? 'Đang lưu...' : 'Lưu lên hệ thống (Chờ phân ca)'}
+                  </button>
+                  <button className="btn btn-primary" onClick={handleExportLeave}>Tải xuống Word</button>
+                </>
+              ) : (
+                <button 
+                  className="btn btn-primary flex items-center justify-center gap-1.5" 
+                  onClick={() => {
+                    handleExportAllZipAndUpdateStatus();
+                    setShowPreview(false);
+                  }}
+                  disabled={isProcessing}
+                >
+                  {isProcessing ? <span className="spin spinw mr-2"></span> : '🎁'} Tạo lịch thay ca và các đơn nghỉ phép
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmModal && confirmModal.isOpen && (
+        <div className="modal-overlay" style={{ zIndex: 9999 }} onClick={closeConfirmModal}>
+          <div className="modal-content !max-w-[420px] shadow-2xl border border-slate-100" onClick={e => e.stopPropagation()}>
+            <div className="modal-header border-b pb-2.5 flex items-center justify-between">
+              <h3 className="text-[15px] font-bold text-slate-900">{confirmModal.title}</h3>
+              <button className="close-btn p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600 transition-colors" onClick={closeConfirmModal}>✕</button>
+            </div>
+            <div className="modal-body py-4">
+              <p className="text-[13px] text-slate-600 font-medium leading-relaxed">{confirmModal.message}</p>
+              
+              {confirmModal.requirePassword && (
+                <div className="mt-4">
+                  <label className="block text-[12px] font-bold text-slate-700 mb-1.5 flex items-center gap-1">
+                    🔒 Nhập mật khẩu xác nhận xóa đơn:
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="Mật khẩu "
+                    value={confirmPassword}
+                    onChange={(e) => {
+                      setConfirmPassword(e.target.value);
+                      if (passwordError) setPasswordError("");
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleConfirmSubmit();
+                      }
+                    }}
+                    className={`w-full px-3 py-2 border rounded-lg text-sm bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 transition-all ${
+                      passwordError 
+                        ? 'border-red-500 focus:ring-red-200' 
+                        : 'border-slate-200 focus:ring-indigo-100 focus:border-indigo-500'
+                    }`}
+                    autoFocus
+                  />
+                  {passwordError && (
+                    <p className="mt-1.5 text-[11px] font-semibold text-red-600 flex items-center gap-1">
+                      <span>⚠</span> {passwordError}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="modal-footer border-t pt-2.5 flex justify-end gap-2.5">
+              <button 
+                className="px-3.5 py-1.5 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg transition-colors cursor-pointer"
+                onClick={() => {
+                  if (confirmModal.onCancel) {
+                    confirmModal.onCancel();
+                  }
+                  closeConfirmModal();
+                }}
+              >
+                {confirmModal.cancelText || 'Hủy'}
+              </button>
+              <button 
+                className={`px-4 py-1.5 text-xs font-semibold text-white rounded-lg transition-colors cursor-pointer ${
+                  confirmModal.isDanger 
+                    ? 'bg-red-600 hover:bg-red-700 active:bg-red-800' 
+                    : 'bg-[#4f46e5] hover:bg-[#4338ca] active:bg-[#3730a3]'
+                }`}
+                onClick={handleConfirmSubmit}
+              >
+                {confirmModal.confirmText || 'Đồng ý'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
-function LinkRow({ icon, label, href, color, level = 2 }: any) {
-  const borderColors = { red: 'border-l-red-500', grn: 'border-l-emerald-500', blu: 'border-l-blue-500' };
-  
-  if (level === 3) {
-    return (
-      <a 
-        href={href} 
-        target="_blank" 
-        rel="noopener noreferrer"
-        className="group relative flex items-center gap-2.5 bg-white hover:bg-slate-50 border border-slate-200/70 p-2.5 px-3 rounded-lg hover:translate-x-0.5 hover:shadow-xs transition-all relative z-10"
-      >
-        <span className="text-sm shrink-0">{icon}</span>
-        <span className="flex-1 text-[11.5px] font-medium text-slate-600 group-hover:text-blue-600 transition-colors leading-snug">{label}</span>
-        
-        <ExternalLink size={11} className="text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-      </a>
-    );
-  }
-
-  return (
-    <a 
-      href={href} 
-      target="_blank" 
-      rel="noopener noreferrer"
-      className={`flex items-center gap-3 bg-white border border-slate-200/80 border-l-[3px] ${borderColors[color as 'red'|'grn'|'blu']} p-3 rounded-lg hover:translate-x-0.5 hover:bg-slate-50 hover:shadow-xs transition-all group`}
-    >
-      <span className="text-base shrink-0">{icon}</span>
-      <span className="flex-1 text-[12px] font-bold text-slate-800 leading-snug group-hover:text-blue-600 transition-colors">{label}</span>
-      
-      <ExternalLink size={12} className="text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-    </a>
-  );
-}
-
-function SubAccordion({ icon, label, children, isOpen, onToggle, color }: any) {
-  const borderLeftColors = { red: 'border-l-red-500', grn: 'border-l-emerald-500', blu: 'border-l-blue-500' };
-  
-  return (
-    <div className={`border border-slate-200 rounded-lg overflow-hidden bg-slate-50/40 shadow-xs border-l-[3px] ${borderLeftColors[color as 'red'|'grn'|'blu']}`}>
-      <div 
-        className="flex items-center justify-between px-3 py-2 bg-slate-100/70 border-b border-slate-200/50"
-      >
-        <div className="flex items-center gap-2.5">
-          <span className="text-base shrink-0">{icon}</span>
-          <span className="text-[12px] font-bold text-slate-800 leading-none">{label}</span>
-        </div>
-      </div>
-      <div className="p-2.5 pr-2 flex flex-col gap-1.5 bg-white/40 border-t border-slate-200/30 relative">
-        {/* Tree vertical timeline branch guide */}
-        <div className="absolute left-[21px] top-4 bottom-6 w-[1px] bg-slate-200" />
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function SubLink({ label, href, color }: any) {
-  const dotColors = { red: 'bg-red-500', grn: 'bg-emerald-500', blu: 'bg-blue-500' };
-  const textColors = { red: 'group-hover:text-red-700', grn: 'group-hover:text-emerald-700', blu: 'group-hover:text-blue-700' };
-  return (
-    <a 
-      href={href} 
-      target="_blank" 
-      rel="noopener noreferrer"
-      className="flex items-center gap-3 px-5 py-3 border-b border-slate-100 last:border-none hover:bg-slate-50 hover:pl-7 transition-all group"
-    >
-      <div className={`w-1.5 h-1.5 rounded-full ${dotColors[color as 'red'|'grn'|'blu']}`} />
-      <span className={`flex-1 text-[12px] font-black text-slate-700 ${textColors[color as 'red'|'grn'|'blu']} transition-colors`}>{label}</span>
-      <ExternalLink size={10} className="text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-    </a>
-  );
-}
-
-function DirectCard({ icon, title, sub, href, color }: any) {
-  const bgColors = { red: 'bg-red-50 text-red-600', grn: 'bg-green-50 text-green-600', blu: 'bg-blue-50 text-blue-600' };
-  return (
-    <a 
-      href={href} 
-      target="_blank" 
-      rel="noopener noreferrer"
-      className="flex items-center gap-4 bg-white/85 border border-slate-200/60 p-5 rounded-2xl shadow-md hover:shadow-xl hover:-translate-y-0.5 hover:border-slate-300/80 transition-all group"
-    >
-      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl shrink-0 ${bgColors[color as 'red'|'grn'|'blu']}`}>
-        {icon}
-      </div>
-      <div className="flex flex-col flex-1">
-        <span className="text-[15px] font-black text-slate-800 leading-none mb-1.5">{title}</span>
-        <span className="text-[11px] font-bold text-slate-400 uppercase tracking-tighter">{sub}</span>
-      </div>
-      <ExternalLink size={16} className="text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-    </a>
-  );
-}

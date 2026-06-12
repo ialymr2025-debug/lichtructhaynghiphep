@@ -1,18 +1,25 @@
 import { BASE_DATE, SHIFTS, RULES } from '../constants';
 
-export function fmtVN(d: Date) {
-  return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2) + '/' + d.getFullYear();
+export function fmtVN(d: any) {
+  if (!d) return '';
+  const date = (typeof d === 'string') ? new Date(d + (d.includes('T') ? '' : 'T00:00:00')) : d;
+  if (isNaN(date.getTime())) return '';
+  return ('0' + date.getDate()).slice(-2) + '/' + ('0' + (date.getMonth() + 1)).slice(-2) + '/' + date.getFullYear();
 }
 
-export function fmtIn(d: Date) {
-  const y = d.getFullYear();
-  const m = ('0' + (d.getMonth() + 1)).slice(-2);
-  const day = ('0' + d.getDate()).slice(-2);
+export function fmtIn(d: any) {
+  const date = (typeof d === 'string') ? new Date(d + (d.includes('T') ? '' : 'T00:00:00')) : d;
+  if (isNaN(date.getTime())) return '';
+  const y = date.getFullYear();
+  const m = ('0' + (date.getMonth() + 1)).slice(-2);
+  const day = ('0' + date.getDate()).slice(-2);
   return `${y}-${m}-${day}`;
 }
 
-export function dayN(d: Date) {
-  return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][d.getDay()];
+export function dayN(d: any) {
+  const date = (typeof d === 'string') ? new Date(d + (d.includes('T') ? '' : 'T00:00:00')) : d;
+  if (isNaN(date.getTime())) return '';
+  return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][date.getDay()];
 }
 
 export function abbrev(n: string) {
@@ -21,8 +28,10 @@ export function abbrev(n: string) {
   return p.slice(0, -1).map(x => x[0] + '.').join('') + p[p.length - 1];
 }
 
-export function xacDinhCa(ngay: Date, kip: number) {
-  const diff = Math.floor((ngay.getTime() - BASE_DATE.getTime()) / 86400000);
+export function xacDinhCa(ngay: any, kip: number) {
+  const date = (typeof ngay === 'string') ? new Date(ngay + (ngay.includes('T') ? '' : 'T00:00:00')) : ngay;
+  if (isNaN(date.getTime())) return '';
+  const diff = Math.floor((date.getTime() - BASE_DATE.getTime()) / 86400000);
   const cycleLen = SHIFTS[0].length;
   return SHIFTS[kip - 1][((diff % cycleLen) + cycleLen) % cycleLen];
 }

@@ -34,8 +34,14 @@
 }
 
 body {
-  background: var(--bg);
-  background-image: var(--bg-gradient);
+  background-color: var(--bg);
+  background-image: 
+    linear-gradient(rgba(237, 244, 241, 0.1), rgba(237, 244, 241, 0.1)),
+    url('https://i.ibb.co/jZ6dDJzT/z7116558150434-802a4bd8dff3b332930235031b93fc49.jpg');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
   color: var(--txt);
   font-family: 'Be Vietnam Pro', sans-serif;
   min-height: 100vh;

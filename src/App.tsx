@@ -37,7 +37,7 @@ export default function App() {
   const [chucDanh, setChucDanh] = useState('');
   const [kipNghi, setKipNghi] = useState('');
   const [additionalLeaves, setAdditionalLeaves] = useState<{ kip: string, start: string, end: string, chucDanh: string }[]>([]);
-  const [showStaff, setShowStaff] = useState(false);
+  const [showStaff, setShowStaff] = useState(true);
   const [alert, setAlert] = useState<string | null>(null);
   const [currentResult, setCurrentResult] = useState<any>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -101,7 +101,7 @@ export default function App() {
   } | null>(null);
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordError, setPasswordError] = useState("");
-  const [activeTab, setActiveTab] = useState<'schedule' | 'leave' | 'swap'>('schedule');
+  const [activeTab, setActiveTab] = useState<'schedule' | 'leave' | 'swap' | 'staff'>('schedule');
 
   const closeConfirmModal = () => {
     setConfirmModal(null);
@@ -1104,49 +1104,89 @@ export default function App() {
   };
 
   return (
-    <div className="wrap">
-      <header>
-        <div className="tag">Công ty Thủy Điện Ialy &middot; Phân Xưởng Vận Hành Ialy</div>
-        <h1>Lịch Trực Thay Ca Nghỉ Phép</h1>
-        <p className="sub">Hệ thống phân công tự động lịch trực ca vận hành nghỉ phép</p>
-      </header>
+    <div className="min-h-screen flex flex-col bg-[var(--bg)]">
+      {/* Top Navbar */}
+      <nav id="top-navbar" className="w-full bg-white border-b border-slate-200 py-3.5 px-4 md:px-8 shadow-sm flex flex-col lg:flex-row items-center justify-between gap-4 relative z-40">
+        <div className="flex flex-col sm:flex-row items-center gap-4">
+          {/* Logo container exactly like screenshot */}
+          <div className="flex items-center select-none">
+            <img 
+              src="https://i.ibb.co/fYS7WtdB/LOGO.png" 
+              alt="EVN Công Ty Thủy Điện Ialy Logo" 
+              className="h-[48px] md:h-[54px] w-auto object-contain"
+              referrerPolicy="no-referrer"
+            />
+          </div>
+          {/* App Title with separator */}
+          <div className="text-[#053d6c] font-black text-lg md:text-xl font-sans tracking-tight sm:border-l sm:border-slate-200 sm:pl-4 py-1 flex items-center h-full">
+            Phân xưởng vận hành laly
+          </div>
+        </div>
 
-      {/* Tab Navigation */}
-      <div className="flex flex-wrap gap-2 border-b border-gray-800 mb-6 pb-2" id="main-tab-nav">
-        <button 
-          id="tab-schedule-btn"
-          className={`px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-            activeTab === 'schedule' 
-              ? 'bg-[var(--acc)] text-slate-950 font-extrabold shadow-[0_0_12px_rgba(0,217,255,0.3)]' 
-              : 'text-[var(--txt2)] hover:bg-[var(--surf2)] hover:text-white'
-          }`}
-          onClick={() => setActiveTab('schedule')}
-        >
-          🗓️ Tạo lịch trực thay ca nghỉ phép
-        </button>
-        <button 
-          id="tab-leave-btn"
-          className={`px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-            activeTab === 'leave' 
-              ? 'bg-[var(--acc)] text-slate-950 font-extrabold shadow-[0_0_12px_rgba(0,217,255,0.3)]' 
-              : 'text-[var(--txt2)] hover:bg-[var(--surf2)] hover:text-white'
-          }`}
-          onClick={() => setActiveTab('leave')}
-        >
-          📝 Tạo đơn xin nghỉ phép
-        </button>
-        <button 
-          id="tab-swap-btn"
-          className={`px-4 py-2.5 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all cursor-pointer ${
-            activeTab === 'swap' 
-              ? 'bg-[var(--acc)] text-slate-950 font-extrabold shadow-[0_0_12px_rgba(0,217,255,0.3)]' 
-              : 'text-[var(--txt2)] hover:bg-[var(--surf2)] hover:text-white'
-          }`}
-          onClick={() => setActiveTab('swap')}
-        >
-          ⇄ Đổi ca thủ công
-        </button>
+        {/* Navigation Tabs on the Right */}
+        <div className="flex items-center gap-4 md:gap-7 flex-wrap justify-center">
+          <button
+            id="nav-schedule-btn"
+            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+              activeTab === 'schedule'
+                ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+            }`}
+            onClick={() => setActiveTab('schedule')}
+          >
+            Lịch trực thay ca vận hành
+          </button>
+          <button
+            id="nav-leave-btn"
+            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+              activeTab === 'leave'
+                ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+            }`}
+            onClick={() => setActiveTab('leave')}
+          >
+            Đơn xin nghỉ phép
+          </button>
+          <button
+            id="nav-swap-btn"
+            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+              activeTab === 'swap'
+                ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+            }`}
+            onClick={() => setActiveTab('swap')}
+          >
+            Đơn đổi ca
+          </button>
+          <button
+            id="nav-staff-btn"
+            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+              activeTab === 'staff'
+                ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+            }`}
+            onClick={() => setActiveTab('staff')}
+          >
+            Nhân sự
+          </button>
+        </div>
+      </nav>
+
+      {/* Hero Banner with beautiful high resolution background */}
+      <div 
+        id="hero-banner" 
+        className="w-full h-[220px] md:h-[280px] lg:h-[320px] relative bg-cover bg-center flex items-center justify-center overflow-hidden" 
+        style={{ 
+          backgroundImage: "url('https://i.ibb.co/jZ6dDJzT/z7116558150434-802a4bd8dff3b332930235031b93fc49.jpg')",
+          backgroundPosition: "center 42%"
+        }}
+      >
+        <div className="absolute inset-0 bg-slate-950/20"></div>
+        
       </div>
+
+      {/* Container for Main Content */}
+      <div className="wrap !pt-8 !pb-16 flex-1 w-full max-w-[1200px] mx-auto px-4 md:px-6">
 
       {activeTab === 'leave' && (
         <>
@@ -1458,62 +1498,6 @@ export default function App() {
         </button>
       </div>
 
-      <div className="card" id="staff-roster-card">
-        <div className="ctitle">
-          Nhân sự của kíp 
-          <div className="flex gap-2">
-            <button className="staff-toggle" onClick={() => setShowStaff(!showStaff)}>
-              {showStaff ? 'Thu gọn ▲' : 'Chỉnh sửa ▼'}
-            </button>
-            <button className="staff-toggle" onClick={() => setShowSignatureManager(!showSignatureManager)}>
-              {showSignatureManager ? '✍️ Ẩn chữ ký' : '✍️ Quản lý chữ ký'}
-            </button>
-          </div>
-        </div>
-        <p className="text-[13px] text-var(--txt2)">Nhấn "Chỉnh sửa" để cập nhật tên nhân viên hoặc "Quản lý chữ ký" để tải lên ảnh chữ ký.</p>
-        
-        {showSignatureManager && (
-          <div className="mb-6">
-            <SignatureManager 
-              staffList={Array.from(new Set(staffData.flatMap(row => row.slice(1)).filter(Boolean)))} 
-              signatures={signatures}
-              onSignaturesChange={setSignatures} 
-            />
-          </div>
-        )}
-
-        {showStaff && (
-          <div className="staff-wrap">
-            <table className="st">
-              <thead>
-                <tr>
-                  <th>Chức danh</th>
-                  <th>Kíp 1</th>
-                  <th>Kíp 2</th>
-                  <th>Kíp 3</th>
-                  <th>Kíp 4</th>
-                  <th>Kíp 5</th>
-                </tr>
-              </thead>
-              <tbody>
-                {staffData.map((row, r) => (
-                  <tr key={r}>
-                    <td>{row[0]}</td>
-                    {[1, 2, 3, 4, 5].map(c => (
-                      <td key={c}>
-                        <input 
-                          value={row[c] || ''} 
-                          onChange={e => handleUpdateStaff(r, c, e.target.value)}
-                        />
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
       {/* End Schedule Tab Content */}
         </>
       )}
@@ -1602,6 +1586,65 @@ export default function App() {
           </button>
         </div>
       </div>
+      )}
+
+      {activeTab === 'staff' && (
+        <div className="card" id="staff-roster-card">
+          <div className="ctitle">
+            Nhân sự của kíp 
+            <div className="flex gap-2">
+              <button className="staff-toggle" onClick={() => setShowStaff(!showStaff)}>
+                {showStaff ? 'Thu gọn ▲' : 'Chỉnh sửa ▼'}
+              </button>
+              <button className="staff-toggle" onClick={() => setShowSignatureManager(!showSignatureManager)}>
+                {showSignatureManager ? '✍️ Ẩn chữ ký' : '✍️ Quản lý chữ ký'}
+              </button>
+            </div>
+          </div>
+          <p className="text-[13px] text-var(--txt2)">Nhấn "Chỉnh sửa" để cập nhật tên nhân viên hoặc "Quản lý chữ ký" để tải lên ảnh chữ ký.</p>
+          
+          {showSignatureManager && (
+            <div className="mb-6">
+              <SignatureManager 
+                staffList={Array.from(new Set(staffData.flatMap(row => row.slice(1)).filter(Boolean)))} 
+                signatures={signatures}
+                onSignaturesChange={setSignatures} 
+              />
+            </div>
+          )}
+
+          {showStaff && (
+            <div className="staff-wrap">
+              <table className="st">
+                <thead>
+                  <tr>
+                    <th>Chức danh</th>
+                    <th>Kíp 1</th>
+                    <th>Kíp 2</th>
+                    <th>Kíp 3</th>
+                    <th>Kíp 4</th>
+                    <th>Kíp 5</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {staffData.map((row, r) => (
+                    <tr key={r}>
+                      <td>{row[0]}</td>
+                      {[1, 2, 3, 4, 5].map(c => (
+                        <td key={c}>
+                          <input 
+                            value={row[c] || ''} 
+                            onChange={e => handleUpdateStaff(r, c, e.target.value)}
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
 
       {activeTab === 'schedule' && currentResult && (
@@ -1933,6 +1976,43 @@ export default function App() {
           </div>
         </div>
       )}
+    </div>
+
+    {/* Footer styled exactly like the provided screenshot/USAGov */}
+    <footer id="app-footer" className="w-full bg-[#072540] text-slate-300 py-10 px-6 md:px-12 mt-auto border-t border-slate-900 select-none">
+      <div className="max-w-[1200px] mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
+        <div className="flex flex-col gap-2.5 text-center md:text-left">
+          <div className="text-[13px] md:text-[14px] text-white font-bold tracking-wide">
+            Hệ thống tự dộng tạo lịch trực thay ca vận hành nghỉ phép VHIALY
+          </div>
+          <div className="text-[12.5px] text-slate-300 leading-relaxed font-medium">
+            Trang thông tin hỗ trợ nội bộ trực thuộc <a href="https://ialyhpc.vn" target="_blank" rel="noopener noreferrer" className="underline hover:text-white transition-colors">Công ty Thủy Điện Ialy</a>
+          </div>
+          
+          {/* Lower row of policy links */}
+          <div className="flex flex-wrap items-center justify-center md:justify-start gap-x-6 gap-y-2 mt-2 text-[11.5px] font-semibold text-slate-400">
+            <span className="underline cursor-pointer hover:text-white transition-colors">Hướng dẫn sử dụng</span>
+            <span className="underline cursor-pointer hover:text-white transition-colors">Chính sách bảo mật nội bộ</span>
+            <span className="underline cursor-pointer hover:text-white transition-colors">Hỗ trợ kỹ thuật </span>
+          </div>
+        </div>
+
+        {/* Top scroll button exactly like the screenshot layout */}
+        <div className="flex items-center">
+          <button 
+            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} 
+            className="flex items-center bg-white text-slate-800 rounded-full pl-1.5 pr-4 py-1.5 transition-all outline-none border border-slate-200 cursor-pointer shadow-md hover:bg-slate-50 hover:shadow-lg active:scale-95 duration-150"
+          >
+            <span className="h-8 w-8 bg-[#00adef] text-white font-bold rounded-full flex items-center justify-center mr-2.5 shadow-sm leading-none text-base">
+              ↑
+            </span>
+            <span className="text-[13px] font-extrabold tracking-wider uppercase text-[#05203c] underline decoration-[#00adef] decoration-2">
+              Top
+            </span>
+          </button>
+        </div>
+      </div>
+    </footer>
     </div>
   );
 }

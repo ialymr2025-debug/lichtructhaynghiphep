@@ -1891,16 +1891,17 @@ export default function App() {
                   <button className="btn btn-primary" onClick={handleExportLeave}>Tải xuống Word</button>
                 </>
               ) : (
-                <button 
-                  className="btn btn-primary flex items-center justify-center gap-1.5" 
-                  onClick={() => {
-                    handleExportAllZipAndUpdateStatus();
-                    setShowPreview(false);
-                  }}
-                  disabled={isProcessing}
-                >
-                  {isProcessing ? <span className="spin spinw mr-2">} Tạo lịch thay ca và các đơn nghỉ phép
-                </button>
+                <button
+  className="btn btn-primary flex items-center justify-center gap-1.5"
+  onClick={() => {
+    handleExportAllZipAndUpdateStatus();
+    setShowPreview(false);
+  }}
+  disabled={isProcessing}
+>
+  {isProcessing && <span className="spin spinw mr-2"></span>}
+  Tạo lịch thay ca và các đơn nghỉ phép
+</button>
               )}
             </div>
           </div>

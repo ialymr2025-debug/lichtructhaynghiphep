@@ -1983,7 +1983,7 @@ export default function App() {
       <div className="max-w-[1200px] mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
         <div className="flex flex-col gap-2.5 text-center md:text-left">
           <div className="text-[13px] md:text-[14px] text-white font-bold tracking-wide">
-            Hệ thống tự dộng tạo lịch trực thay ca vận hành nghỉ phép VHIALY
+            Hệ thống tự động tạo lịch trực thay ca vận hành nghỉ phép VHIALY
           </div>
           <div className="text-[12.5px] text-slate-300 leading-relaxed font-medium">
             Trang thông tin hỗ trợ nội bộ trực thuộc <a href="https://ialyhpc.vn" target="_blank" rel="noopener noreferrer" className="underline hover:text-white transition-colors">Công ty Thủy Điện Ialy</a>

@@ -679,7 +679,7 @@ export default function App() {
         body: JSON.stringify(leaveData)
       });
       if (res.ok) {
-        setAlert(`✅ Đã lưu đơn của đồng chí ${leaveData.name} lên Google Sheets ở trạng thái Chờ phân ca!`);
+        setAlert(`✅ Đã lưu đơn của đồng chí ${leaveData.name}  ở trạng thái Chờ xếp lịch phân ca!`);
         fetchWaitingLeaves();
         setShowPreview(false);
       } else {
@@ -1365,7 +1365,7 @@ export default function App() {
             </div>
             
             {waitingLeaves.length === 0 ? (
-              <p className="text-[12px] text-var(--txt2) italic">Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca trên Google Sheets.</p>
+              <p className="text-[12px] text-var(--txt2) italic">Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca.</p>
             ) : (
               <div className="max-h-[220px] overflow-y-auto pr-1">
                 <div className="flex flex-col gap-2">
@@ -1886,7 +1886,7 @@ export default function App() {
                     disabled={isSavingLeaveToSheets || !leaveData.name}
                   >
                     {isSavingLeaveToSheets ? <span className="spin spinw mr-2"></span> : '☁️ '}
-                    {isSavingLeaveToSheets ? 'Đang lưu...' : 'Lưu lên hệ thống (Chờ phân ca)'}
+                    {isSavingLeaveToSheets ? 'Đang lưu...' : 'Lưu lên hệ thống chờ xếp lịch'}
                   </button>
                   <button className="btn btn-primary" onClick={handleExportLeave}>Tải xuống Word</button>
                 </>
@@ -1899,7 +1899,7 @@ export default function App() {
                   }}
                   disabled={isProcessing}
                 >
-                  {isProcessing ? <span className="spin spinw mr-2"></span> : '🎁'} Tạo lịch thay ca và các đơn nghỉ phép
+                  {isProcessing ? <span className="spin spinw mr-2">} Tạo lịch thay ca và các đơn nghỉ phép
                 </button>
               )}
             </div>

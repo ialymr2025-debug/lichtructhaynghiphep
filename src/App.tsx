@@ -679,7 +679,7 @@ export default function App() {
         body: JSON.stringify(leaveData)
       });
       if (res.ok) {
-        setAlert(`✅ Đã lưu đơn của đồng chí ${leaveData.name}  ở trạng thái Chờ xếp lịch phân ca!`);
+        setAlert(`✅ Đã lưu đơn của ${leaveData.name}  ở trạng thái Chờ xếp lịch phân ca!`);
         fetchWaitingLeaves();
         setShowPreview(false);
       } else {

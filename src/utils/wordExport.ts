@@ -383,19 +383,14 @@ export function buildDocXml(currentResult: any, config: any) {
       tableRows.push(wtr(tenRow));
 
       // Nếu có ghi chú nhưng chưa được chèn (do hàng đầy hoặc chỉ còn 1 ô trống),
-      // hoặc nếu chỉ còn trống đúng 1 ô (theo yêu cầu: tự động thêm 1 hàng riêng biệt bên dưới)
-      const remainingCount = nCols - grp.length;
-      const shouldAddSeparateRow = (isLast && !noteIncludedInThisRow && uniqueNotes.length > 0) || (isLast && remainingCount === 1);
+      // thì thêm một hàng riêng biệt bên dưới để hiển thị ghi chú.
+      const shouldAddSeparateRow = (isLast && !noteIncludedInThisRow && uniqueNotes.length > 0);
 
       if (shouldAddSeparateRow) {
         let noteContent = '';
-        if (uniqueNotes.length > 0) {
-          uniqueNotes.forEach(line => {
-            noteContent += wpara(wrun(line, { size: 24 }), { spBefore: 40, spAfter: 40 });
-          });
-        } else {
-          noteContent = emptyP(40, 40); // Hàng trống nếu không có ghi chú nhưng còn trống 1 ô
-        }
+        uniqueNotes.forEach(line => {
+          noteContent += wpara(wrun(line, { size: 24 }), { spBefore: 40, spAfter: 40 });
+        });
         tableRows.push(wtr([
           wtc({ w: c0, vMerge: 'cont', content: emptyP() }),
           wtc({ w: c1, vMerge: 'cont', content: emptyP() }),

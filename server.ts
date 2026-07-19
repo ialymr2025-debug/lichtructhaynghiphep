@@ -23,7 +23,7 @@ async function sendZaloNotification(data: {
   location: string;
   dateStr: string;
 }) {
-  let webhookUrl = "https://specialists-intro-exterior-advocacy.trycloudflare.com/webhook/notify";
+  let webhookUrl = "https://committed-intellectual-lunch-clone.trycloudflare.com/webhook/notify";
   try {
     const db = getFirestoreInstance();
     const doc = await db.collection("config").doc("app_settings").get();
@@ -32,7 +32,7 @@ async function sendZaloNotification(data: {
       if (docData && docData.config && docData.config.zaloWebhookUrl) {
         let url = docData.config.zaloWebhookUrl;
         if (url.includes("cookies-blue-pen-bikini.trycloudflare.com")) {
-          url = "https://specialists-intro-exterior-advocacy.trycloudflare.com/webhook/notify";
+          url = "https://committed-intellectual-lunch-clone.trycloudflare.com/webhook/notify";
         }
         webhookUrl = url;
       }
@@ -443,7 +443,7 @@ app.get("/api/app-settings", async (req, res) => {
 
         // Migrate Zalo Webhook URL
         if (data.config && data.config.zaloWebhookUrl && data.config.zaloWebhookUrl.includes("cookies-blue-pen-bikini.trycloudflare.com")) {
-          data.config.zaloWebhookUrl = "https://specialists-intro-exterior-advocacy.trycloudflare.com/webhook/notify";
+          data.config.zaloWebhookUrl = "https://committed-intellectual-lunch-clone.trycloudflare.com/webhook/notify";
           try {
             await db.collection("config").doc("app_settings").set({
               config: data.config

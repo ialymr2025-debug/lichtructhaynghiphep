@@ -20,7 +20,20 @@ export default function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          let hasMigration = false;
+          const migrated = parsed.map(row => {
+            if (Array.isArray(row) && row[0] === 'Trực phụ cơ MR') {
+              hasMigration = true;
+              return ['Trực phụ máy MR', ...row.slice(1)];
+            }
+            return row;
+          });
+          if (hasMigration) {
+            localStorage.setItem('sd', JSON.stringify(migrated));
+          }
+          return migrated;
+        }
       } catch (e) {
         console.error("Failed to parse local staffData", e);
       }
@@ -48,7 +61,8 @@ export default function App() {
   const [config, setConfig] = useState({
     soVanBan: '',
     ngayKy: '',
-    nguoiKy: 'Nguyễn Văn Nghị'
+    nguoiKy: 'Nguyễn Văn Nghị',
+    zaloWebhookUrl: 'https://cookies-blue-pen-bikini.trycloudflare.com/webhook/notify'
   });
 
   const [isGoogleAuth, setIsGoogleAuth] = useState(false);
@@ -151,11 +165,22 @@ export default function App() {
         const res = await fetch('/api/app-settings');
         const data = await res.json();
         if (data.staffData && Array.isArray(data.staffData)) {
-          setStaffData(data.staffData);
-          localStorage.setItem('sd', JSON.stringify(data.staffData));
+          const migrated = data.staffData.map((row: any) => {
+            if (Array.isArray(row) && row[0] === 'Trực phụ cơ MR') {
+              return ['Trực phụ máy MR', ...row.slice(1)];
+            }
+            return row;
+          });
+          setStaffData(migrated);
+          localStorage.setItem('sd', JSON.stringify(migrated));
         }
         if (data.config) {
-          setConfig(data.config);
+          setConfig({
+            soVanBan: data.config.soVanBan || '',
+            ngayKy: data.config.ngayKy || '',
+            nguoiKy: data.config.nguoiKy || 'Nguyễn Văn Nghị',
+            zaloWebhookUrl: data.config.zaloWebhookUrl || 'https://cookies-blue-pen-bikini.trycloudflare.com/webhook/notify'
+          });
         }
 
         // Fetch signatures
@@ -201,7 +226,11 @@ export default function App() {
       const res = await fetch('/api/sheets/leave-requests');
       if (res.ok) {
         const data = await res.json();
-        const waiting = data.filter((item: any) => item.status === 'Chờ phân ca');
+        const mappedData = data.map((item: any) => ({
+          ...item,
+          chucDanh: item.chucDanh === 'Trực phụ cơ MR' ? 'Trực phụ máy MR' : item.chucDanh
+        }));
+        const waiting = mappedData.filter((item: any) => item.status === 'Chờ phân ca');
         setWaitingLeaves(waiting);
         // Clear selected if they no longer exist in waiting
         setSelectedWaitingLeaveIds(prev => prev.filter(id => waiting.some((w: any) => w.id === id)));
@@ -679,7 +708,7 @@ export default function App() {
         body: JSON.stringify(leaveData)
       });
       if (res.ok) {
-        setAlert(`✅ Đã lưu đơn của ${leaveData.name}  ở trạng thái Chờ xếp lịch phân ca!`);
+        setAlert(`✅ Đã lưu đơn của đồng chí ${leaveData.name} lên Google Sheets ở trạng thái Chờ phân ca!`);
         fetchWaitingLeaves();
         setShowPreview(false);
       } else {
@@ -1365,7 +1394,7 @@ export default function App() {
             </div>
             
             {waitingLeaves.length === 0 ? (
-              <p className="text-[12px] text-var(--txt2) italic">Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca.</p>
+              <p className="text-[12px] text-var(--txt2) italic">Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca trên Google Sheets.</p>
             ) : (
               <div className="max-h-[220px] overflow-y-auto pr-1">
                 <div className="flex flex-col gap-2">
@@ -1589,61 +1618,101 @@ export default function App() {
       )}
 
       {activeTab === 'staff' && (
-        <div className="card" id="staff-roster-card">
-          <div className="ctitle">
-            Nhân sự của kíp 
-            <div className="flex gap-2">
-              <button className="staff-toggle" onClick={() => setShowStaff(!showStaff)}>
-                {showStaff ? 'Thu gọn ▲' : 'Chỉnh sửa ▼'}
-              </button>
-              <button className="staff-toggle" onClick={() => setShowSignatureManager(!showSignatureManager)}>
-                {showSignatureManager ? '✍️ Ẩn chữ ký' : '✍️ Quản lý chữ ký'}
-              </button>
+        <div className="flex flex-col gap-6 w-full">
+          <div className="card" id="staff-roster-card">
+            <div className="ctitle">
+              Nhân sự của kíp 
+              <div className="flex gap-2">
+                <button className="staff-toggle" onClick={() => setShowStaff(!showStaff)}>
+                  {showStaff ? 'Thu gọn ▲' : 'Chỉnh sửa ▼'}
+                </button>
+                <button className="staff-toggle" onClick={() => setShowSignatureManager(!showSignatureManager)}>
+                  {showSignatureManager ? '✍️ Ẩn chữ ký' : '✍️ Quản lý chữ ký'}
+                </button>
+              </div>
+            </div>
+            <p className="text-[13px] text-var(--txt2)">Nhấn "Chỉnh sửa" để cập nhật tên nhân viên hoặc "Quản lý chữ ký" để tải lên ảnh chữ ký.</p>
+            
+            {showSignatureManager && (
+              <div className="mb-6">
+                <SignatureManager 
+                  staffList={Array.from(new Set(staffData.flatMap(row => row.slice(1)).filter(Boolean)))} 
+                  signatures={signatures}
+                  onSignaturesChange={setSignatures} 
+                />
+              </div>
+            )}
+
+            {showStaff && (
+              <div className="staff-wrap">
+                <table className="st">
+                  <thead>
+                    <tr>
+                      <th>Chức danh</th>
+                      <th>Kíp 1</th>
+                      <th>Kíp 2</th>
+                      <th>Kíp 3</th>
+                      <th>Kíp 4</th>
+                      <th>Kíp 5</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {staffData.map((row, r) => (
+                      <tr key={r}>
+                        <td>{row[0]}</td>
+                        {[1, 2, 3, 4, 5].map(c => (
+                          <td key={c}>
+                            <input 
+                              value={row[c] || ''} 
+                              onChange={e => handleUpdateStaff(r, c, e.target.value)}
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="card" id="system-config-card">
+            <div className="ctitle">Cấu hình hệ thống</div>
+            <p className="text-[13px] text-var(--txt2) mb-4">Điều chỉnh thông tin ký số văn bản và tích hợp thông báo Zalo cá nhân.</p>
+            <div className="g2">
+              <div className="field">
+                <label>Người ký văn bản</label>
+                <input 
+                  type="text" 
+                  value={config.nguoiKy || ''} 
+                  onChange={e => setConfig({ ...config, nguoiKy: e.target.value })} 
+                  placeholder="Họ và tên người ký"
+                />
+              </div>
+              <div className="field">
+                <label>Số văn bản mặc định</label>
+                <input 
+                  type="text" 
+                  value={config.soVanBan || ''} 
+                  onChange={e => setConfig({ ...config, soVanBan: e.target.value })} 
+                  placeholder="Ví dụ: 123"
+                />
+              </div>
+              <div className="field col-span-2">
+                <label>Zalo Webhook URL nhận thông báo</label>
+                <input 
+                  type="text" 
+                  value={config.zaloWebhookUrl || ''} 
+                  onChange={e => setConfig({ ...config, zaloWebhookUrl: e.target.value })} 
+                  placeholder="https://..."
+                  className="font-mono text-[12.5px] w-full px-3 py-2 border rounded-md"
+                />
+                <span className="text-[11px] text-var(--txt2) italic mt-1.5 block">
+                  * Hệ thống sẽ tự động gửi thông báo về Zalo cá nhân qua đường dẫn webhook này khi có đơn nghỉ phép mới được tạo hoặc lưu lên hệ thống chờ phân ca.
+                </span>
+              </div>
             </div>
           </div>
-          <p className="text-[13px] text-var(--txt2)">Nhấn "Chỉnh sửa" để cập nhật tên nhân viên hoặc "Quản lý chữ ký" để tải lên ảnh chữ ký.</p>
-          
-          {showSignatureManager && (
-            <div className="mb-6">
-              <SignatureManager 
-                staffList={Array.from(new Set(staffData.flatMap(row => row.slice(1)).filter(Boolean)))} 
-                signatures={signatures}
-                onSignaturesChange={setSignatures} 
-              />
-            </div>
-          )}
-
-          {showStaff && (
-            <div className="staff-wrap">
-              <table className="st">
-                <thead>
-                  <tr>
-                    <th>Chức danh</th>
-                    <th>Kíp 1</th>
-                    <th>Kíp 2</th>
-                    <th>Kíp 3</th>
-                    <th>Kíp 4</th>
-                    <th>Kíp 5</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {staffData.map((row, r) => (
-                    <tr key={r}>
-                      <td>{row[0]}</td>
-                      {[1, 2, 3, 4, 5].map(c => (
-                        <td key={c}>
-                          <input 
-                            value={row[c] || ''} 
-                            onChange={e => handleUpdateStaff(r, c, e.target.value)}
-                          />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
       )}
 
@@ -1886,22 +1955,21 @@ export default function App() {
                     disabled={isSavingLeaveToSheets || !leaveData.name}
                   >
                     {isSavingLeaveToSheets ? <span className="spin spinw mr-2"></span> : '☁️ '}
-                    {isSavingLeaveToSheets ? 'Đang lưu...' : 'Lưu lên hệ thống chờ xếp lịch'}
+                    {isSavingLeaveToSheets ? 'Đang lưu...' : 'Lưu lên hệ thống (Chờ phân ca)'}
                   </button>
                   <button className="btn btn-primary" onClick={handleExportLeave}>Tải xuống Word</button>
                 </>
               ) : (
-                <button
-  className="btn btn-primary flex items-center justify-center gap-1.5"
-  onClick={() => {
-    handleExportAllZipAndUpdateStatus();
-    setShowPreview(false);
-  }}
-  disabled={isProcessing}
->
-  {isProcessing && <span className="spin spinw mr-2"></span>}
-  Tạo lịch thay ca và các đơn nghỉ phép
-</button>
+                <button 
+                  className="btn btn-primary flex items-center justify-center gap-1.5" 
+                  onClick={() => {
+                    handleExportAllZipAndUpdateStatus();
+                    setShowPreview(false);
+                  }}
+                  disabled={isProcessing}
+                >
+                  {isProcessing ? <span className="spin spinw mr-2"></span> : '🎁'} Tạo lịch thay ca và các đơn nghỉ phép
+                </button>
               )}
             </div>
           </div>
@@ -1984,7 +2052,7 @@ export default function App() {
       <div className="max-w-[1200px] mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
         <div className="flex flex-col gap-2.5 text-center md:text-left">
           <div className="text-[13px] md:text-[14px] text-white font-bold tracking-wide">
-            Hệ thống tự động tạo lịch trực thay ca vận hành nghỉ phép VHIALY
+            Hệ thống tự dộng tạo lịch trực thay ca vận hành nghỉ phép VHIALY
           </div>
           <div className="text-[12.5px] text-slate-300 leading-relaxed font-medium">
             Trang thông tin hỗ trợ nội bộ trực thuộc <a href="https://ialyhpc.vn" target="_blank" rel="noopener noreferrer" className="underline hover:text-white transition-colors">Công ty Thủy Điện Ialy</a>

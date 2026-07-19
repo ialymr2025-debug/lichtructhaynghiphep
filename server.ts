@@ -4,11 +4,104 @@ import path from "path";
 import { google } from "googleapis";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
+import https from "https";
 
 import fs from "fs";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 dotenv.config();
+
+// Helper to send notification to Zalo personal webhook
+async function sendZaloNotification(data: {
+  name: string;
+  chucDanh: string;
+  kip: string;
+  startDate: string;
+  endDate: string;
+  reason: string;
+  phone: string;
+  location: string;
+  dateStr: string;
+}) {
+  let webhookUrl = "https://specialists-intro-exterior-advocacy.trycloudflare.com/webhook/notify";
+  try {
+    const db = getFirestoreInstance();
+    const doc = await db.collection("config").doc("app_settings").get();
+    if (doc.exists) {
+      const docData = doc.data();
+      if (docData && docData.config && docData.config.zaloWebhookUrl) {
+        let url = docData.config.zaloWebhookUrl;
+        if (url.includes("cookies-blue-pen-bikini.trycloudflare.com")) {
+          url = "https://specialists-intro-exterior-advocacy.trycloudflare.com/webhook/notify";
+        }
+        webhookUrl = url;
+      }
+    }
+  } catch (dbErr: any) {
+    console.log("Unable to load zaloWebhookUrl from Firestore, using default:", dbErr.message);
+  }
+  
+  const textMessage = `CÓ ĐƠN NGHỈ PHÉP MỚI 
+• Họ và tên: ${data.name}
+• Chức danh: ${data.chucDanh}
+• Kíp: Kíp ${data.kip}
+• Thời gian: Từ ${data.startDate} đến ${data.endDate}
+• Lý do: ${data.reason || "Giải quyết việc riêng gia đình"}`;
+
+
+  const payload = JSON.stringify({
+    text: textMessage,
+    message: textMessage,
+    content: textMessage,
+    data: {
+      name: data.name,
+      chucDanh: data.chucDanh,
+      kip: data.kip,
+      startDate: data.startDate,
+      endDate: data.endDate,
+      reason: data.reason,
+      phone: data.phone,
+      location: data.location,
+      createdAt: data.dateStr
+    }
+  });
+
+  try {
+    const parsedUrl = new URL(webhookUrl);
+    const options = {
+      hostname: parsedUrl.hostname,
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload)
+      },
+      timeout: 5000
+    };
+
+    const req = https.request(options, (res) => {
+      let body = "";
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => {
+        console.log(`Zalo notification response (status ${res.statusCode}): ${body}`);
+      });
+    });
+
+    req.on("error", (e: any) => {
+      console.log("Zalo Webhook unreachable (e.g. offline tunnel or invalid URL):", e.message);
+    });
+
+    req.on("timeout", () => {
+      req.destroy();
+      console.log("Zalo notification request timed out");
+    });
+
+    req.write(payload);
+    req.end();
+  } catch (e: any) {
+    console.log("Failed to parse webhook URL or send Zalo notification:", e.message);
+  }
+}
 
 let firebaseConfig: any = {};
 try {
@@ -325,6 +418,40 @@ app.get("/api/app-settings", async (req, res) => {
         // Ensure it's an array
         if (!Array.isArray(data.staffData)) {
           data.staffData = [];
+        } else {
+          // Perform server-side migration for 'Trực phụ cơ MR' -> 'Trực phụ máy MR'
+          let hasMigration = false;
+          const migrated = data.staffData.map((row: any) => {
+            if (Array.isArray(row) && row[0] === 'Trực phụ cơ MR') {
+              hasMigration = true;
+              return ['Trực phụ máy MR', ...row.slice(1)];
+            }
+            return row;
+          });
+          if (hasMigration) {
+            data.staffData = migrated;
+            try {
+              await db.collection("config").doc("app_settings").set({
+                staffData: JSON.stringify(migrated)
+              }, { merge: true });
+              console.log("Migrated 'Trực phụ cơ MR' to 'Trực phụ máy MR' in Firestore settings.");
+            } catch (saveErr) {
+              console.error("Failed to save migrated staffData in Firestore", saveErr);
+            }
+          }
+        }
+
+        // Migrate Zalo Webhook URL
+        if (data.config && data.config.zaloWebhookUrl && data.config.zaloWebhookUrl.includes("cookies-blue-pen-bikini.trycloudflare.com")) {
+          data.config.zaloWebhookUrl = "https://specialists-intro-exterior-advocacy.trycloudflare.com/webhook/notify";
+          try {
+            await db.collection("config").doc("app_settings").set({
+              config: data.config
+            }, { merge: true });
+            console.log("Migrated 'zaloWebhookUrl' to 'specialists-intro-exterior-advocacy' in Firestore settings.");
+          } catch (saveErr) {
+            console.error("Failed to save migrated zaloWebhookUrl in Firestore", saveErr);
+          }
         }
       }
       res.json(data);
@@ -557,11 +684,12 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
         item[header] = row[index] || "";
       });
       
+      const leaveChucDanh = (item["Chức danh"] || "") === "Trực phụ cơ MR" ? "Trực phụ máy MR" : (item["Chức danh"] || "");
       const leave = {
         id: item["Mã đơn"] || "",
         name: item["Họ và tên"] || "",
         birthYear: item["Năm sinh"] || "",
-        chucDanh: item["Chức danh"] || "",
+        chucDanh: leaveChucDanh,
         kip: item["Kíp"] || "",
         startDate: item["Từ ngày"] || "",
         endDate: item["Đến ngày"] || "",
@@ -603,6 +731,8 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
     return res.status(400).json({ error: "Thiếu thông tin bắt buộc" });
   }
 
+  const normalizedChucDanh = chucDanh === "Trực phụ cơ MR" ? "Trực phụ máy MR" : chucDanh;
+
   try {
     await ensureLeaveSheetExists(sheets, spreadsheetId);
     
@@ -614,7 +744,7 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
       id,
       name,
       birthYear || "",
-      chucDanh,
+      normalizedChucDanh,
       String(kip),
       startDate,
       endDate,
@@ -632,6 +762,19 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
       requestBody: {
         values: [rowValue]
       }
+    });
+
+    // Send Zalo Notification asynchronously so it doesn't block the response
+    sendZaloNotification({
+      name,
+      chucDanh: normalizedChucDanh,
+      kip: String(kip),
+      startDate,
+      endDate,
+      reason,
+      phone,
+      location,
+      dateStr
     });
 
     res.json({ success: true, id, status });
@@ -835,6 +978,9 @@ app.post("/api/sheets/update", async (req, res) => {
     const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
     const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
 
+    const sheetsCache: { [range: string]: any[][] } = {};
+    const batchData: any[] = [];
+
     for (const update of updates) {
       const date = new Date(update.date);
       const month = date.getMonth() + 1;
@@ -860,12 +1006,19 @@ app.post("/api/sheets/update", async (req, res) => {
         continue;
       }
 
-      // Read the sheet to find the person and the date
+      // Read the sheet to find the person and the date (with cache)
       const range = `${sheetName}!A1:CZ500`; // Increased range to cover more columns (up to CZ) and rows
-      const response = await sheets.spreadsheets.values.get({ spreadsheetId, range });
-      const rows = response.data.values;
+      let rows = sheetsCache[range];
+      if (!rows) {
+        console.log(`Cache miss: Fetching sheet range ${range}...`);
+        const response = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+        rows = response.data.values || [];
+        sheetsCache[range] = rows;
+      } else {
+        console.log(`Cache hit: Using cached rows for range ${range}`);
+      }
 
-      if (!rows || rows.length === 0) {
+      if (rows.length === 0) {
         console.warn(`No data found in sheet: ${sheetName}`);
         continue;
       }
@@ -922,22 +1075,27 @@ app.post("/api/sheets/update", async (req, res) => {
       // Update the cell in LICH sheet
       const colLetter = getColumnLetter(personColIdx);
       const cellRange = `${sheetName}!${colLetter}${dateRowIdx + 1}`;
-      console.log(`Updating ${update.name} on ${update.date} to ${update.shift} at ${cellRange}`);
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
+      console.log(`Adding to batch: ${update.name} on ${update.date} to ${update.shift} at ${cellRange}`);
+      batchData.push({
         range: cellRange,
-        valueInputOption: "RAW",
-        requestBody: { values: [[update.shift]] }
+        values: [[update.shift]]
       });
 
       // Also try to update TONG_HOP sheet if it exists
       const summarySheetName = `TONG_HOP_${monthStr}_${year}`;
       if (sheetNames.includes(summarySheetName)) {
         const summaryRange = `${summarySheetName}!A1:CZ500`; // Increased range
-        const summaryResponse = await sheets.spreadsheets.values.get({ spreadsheetId, range: summaryRange });
-        const summaryRows = summaryResponse.data.values;
+        let summaryRows = sheetsCache[summaryRange];
+        if (!summaryRows) {
+          console.log(`Cache miss: Fetching summary sheet range ${summaryRange}...`);
+          const summaryResponse = await sheets.spreadsheets.values.get({ spreadsheetId, range: summaryRange });
+          summaryRows = summaryResponse.data.values || [];
+          sheetsCache[summaryRange] = summaryRows;
+        } else {
+          console.log(`Cache hit: Using cached rows for range ${summaryRange}`);
+        }
         
-        if (summaryRows && summaryRows.length > 0) {
+        if (summaryRows.length > 0) {
           // Find person row in TONG_HOP (Column A, starting from row 5)
           let summaryRowIdx = -1;
           for (let i = 4; i < summaryRows.length; i++) {
@@ -955,15 +1113,26 @@ app.post("/api/sheets/update", async (req, res) => {
           if (summaryRowIdx !== -1) {
             const summaryColLetter = getColumnLetter(summaryColIdx);
             const summaryCellRange = `${summarySheetName}!${summaryColLetter}${summaryRowIdx + 1}`;
-            await sheets.spreadsheets.values.update({
-              spreadsheetId,
+            console.log(`Adding to batch (summary): ${update.name} on ${update.date} to ${update.shift} at ${summaryCellRange}`);
+            batchData.push({
               range: summaryCellRange,
-              valueInputOption: "RAW",
-              requestBody: { values: [[update.shift]] }
+              values: [[update.shift]]
             });
           }
         }
       }
+    }
+
+    if (batchData.length > 0) {
+      console.log(`Executing batchUpdate of ${batchData.length} cells...`);
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          valueInputOption: "RAW",
+          data: batchData
+        }
+      });
+      console.log("batchUpdate executed successfully!");
     }
 
     // 4. Append notification to "Bảng báo cơm ca" sheet if it exists
@@ -1081,6 +1250,7 @@ app.post("/api/sheets/update-annual-leaves", async (req, res) => {
 
     const skippedNames: string[] = [];
     const updatedNames: string[] = [];
+    const batchData: any[] = [];
 
     for (const update of updates) {
       if (!update.name) continue;
@@ -1112,14 +1282,24 @@ app.post("/api/sheets/update-annual-leaves", async (req, res) => {
       }
 
       const cellRange = `'${targetSheetName}'!F${rowIdx + 1}`;
-      console.log(`Ghi ${update.tongcatrucphaithay} ca phép cho ${update.name} tại ${cellRange}`);
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
+      console.log(`Adding to batch (annual leaves): ${update.tongcatrucphaithay} ca phép cho ${update.name} tại ${cellRange}`);
+      batchData.push({
         range: cellRange,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [[update.tongcatrucphaithay]] }
+        values: [[update.tongcatrucphaithay]]
       });
       updatedNames.push(update.name);
+    }
+
+    if (batchData.length > 0) {
+      console.log(`Executing batchUpdate of ${batchData.length} annual leaves cells...`);
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: batchData
+        }
+      });
+      console.log("Annual leaves batchUpdate executed successfully!");
     }
 
     res.json({ success: true, updatedNames, skippedNames });

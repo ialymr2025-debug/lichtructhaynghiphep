@@ -31,7 +31,7 @@ async function sendZaloNotification(data: {
       const docData = doc.data();
       if (docData && docData.config && docData.config.zaloWebhookUrl) {
         let url = docData.config.zaloWebhookUrl;
-        if (url.includes("cookies-blue-pen-bikini.trycloudflare.com")) {
+        if (url.includes("committed-intellectual-lunch-clone.trycloudflare.com")) {
           url = "https://committed-intellectual-lunch-clone.trycloudflare.com/webhook/notify";
         }
         webhookUrl = url;

@@ -23,22 +23,25 @@ async function sendZaloNotification(data: {
   location: string;
   dateStr: string;
 }) {
-  let webhookUrl = "https://vhialy.dpdns.org/webhook/notify";
-  try {
-    const db = getFirestoreInstance();
-    const doc = await db.collection("config").doc("app_settings").get();
-    if (doc.exists) {
-      const docData = doc.data();
-      if (docData && docData.config && docData.config.zaloWebhookUrl) {
-        let url = docData.config.zaloWebhookUrl;
-        if (url.includes("vhialy.dpdns.org")) {
-          url = "https://vhialy.dpdns.org/webhook/notify";
+  let webhookUrl = process.env.ZALO_WEBHOOK_URL || "https://committed-intellectual-lunch-clone.trycloudflare.com/webhook/notify";
+  
+  if (!process.env.ZALO_WEBHOOK_URL) {
+    try {
+      const db = getFirestoreInstance();
+      const doc = await db.collection("config").doc("app_settings").get();
+      if (doc.exists) {
+        const docData = doc.data();
+        if (docData && docData.config && docData.config.zaloWebhookUrl) {
+          let url = docData.config.zaloWebhookUrl;
+          if (url.includes("cookies-blue-pen-bikini.trycloudflare.com")) {
+            url = "https://specialists-intro-exterior-advocacy.trycloudflare.com/webhook/notify";
+          }
+          webhookUrl = url;
         }
-        webhookUrl = url;
       }
+    } catch (dbErr: any) {
+      console.log("Unable to load zaloWebhookUrl from Firestore, using default:", dbErr.message);
     }
-  } catch (dbErr: any) {
-    console.log("Unable to load zaloWebhookUrl from Firestore, using default:", dbErr.message);
   }
   
   const textMessage = `CÓ ĐƠN NGHỈ PHÉP MỚI 
@@ -442,8 +445,8 @@ app.get("/api/app-settings", async (req, res) => {
         }
 
         // Migrate Zalo Webhook URL
-        if (data.config && data.config.zaloWebhookUrl && data.config.zaloWebhookUrl.includes("vhialy.dpdns.org")) {
-          data.config.zaloWebhookUrl = "https://vhialy.dpdns.org/webhook/notify";
+        if (data.config && data.config.zaloWebhookUrl && data.config.zaloWebhookUrl.includes("cookies-blue-pen-bikini.trycloudflare.com")) {
+          data.config.zaloWebhookUrl = "https://specialists-intro-exterior-advocacy.trycloudflare.com/webhook/notify";
           try {
             await db.collection("config").doc("app_settings").set({
               config: data.config

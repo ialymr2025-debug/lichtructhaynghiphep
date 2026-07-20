@@ -62,7 +62,7 @@ export default function App() {
     soVanBan: '',
     ngayKy: '',
     nguoiKy: 'Nguyễn Văn Nghị',
-    zaloWebhookUrl: 'https://committed-intellectual-lunch-clone.trycloudflare.com/webhook/notify'
+    zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
   });
 
   const [isGoogleAuth, setIsGoogleAuth] = useState(false);
@@ -179,7 +179,7 @@ export default function App() {
             soVanBan: data.config.soVanBan || '',
             ngayKy: data.config.ngayKy || '',
             nguoiKy: data.config.nguoiKy || 'Nguyễn Văn Nghị',
-            zaloWebhookUrl: data.config.zaloWebhookUrl || 'https://committed-intellectual-lunch-clone.trycloudflare.com/webhook/notify'
+            zaloWebhookUrl: data.config.zaloWebhookUrl || 'https://vhialy.dpdns.org/webhook/notify'
           });
         }
 

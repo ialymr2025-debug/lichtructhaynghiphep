@@ -22,6 +22,7 @@ async function sendZaloNotification(data: {
   phone: string;
   location: string;
   dateStr: string;
+  leaveBalance?: { entitled: string; used: string; remaining: string } | null;
 }) {
   let webhookUrl = process.env.ZALO_WEBHOOK_URL || "https://vhialy.dpdns.org/webhook/notify";
   
@@ -48,13 +49,19 @@ async function sendZaloNotification(data: {
     }
   }
   
-  const textMessage = `CÓ ĐƠN NGHỈ PHÉP MỚI 
+  let textMessage = `CÓ ĐƠN NGHỈ PHÉP MỚI 
 • Họ và tên: ${data.name}
 • Chức danh: ${data.chucDanh}
 • Kíp: Kíp ${data.kip}
 • Thời gian: Từ ${data.startDate} đến ${data.endDate}
 • Lý do: ${data.reason || "Giải quyết việc riêng gia đình"}`;
 
+  if (data.leaveBalance) {
+    textMessage += `
+• Phép được hưởng: ${data.leaveBalance.entitled} ngày
+• Phép đã nghỉ: ${data.leaveBalance.used} ngày
+• Phép còn lại: ${data.leaveBalance.remaining} ngày`;
+  }
 
   const payload = JSON.stringify({
     text: textMessage,
@@ -69,7 +76,8 @@ async function sendZaloNotification(data: {
       reason: data.reason,
       phone: data.phone,
       location: data.location,
-      createdAt: data.dateStr
+      createdAt: data.dateStr,
+      leaveBalance: data.leaveBalance || null
     }
   });
 
@@ -370,6 +378,80 @@ const getOAuth2Client = () => {
 
   return client;
 };
+
+function removeVietnameseAccents(str: string): string {
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function fetchLeaveBalanceHelper(name: string): Promise<{ entitled: string; used: string; remaining: string } | null> {
+  try {
+    const oauth2Client = getOAuth2Client();
+    let tokens = await loadTokens();
+    if (!tokens) return null;
+
+    oauth2Client.setCredentials(tokens);
+    const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+    const spreadsheetId = '1pH1-Nj4B1nauoEfO5cZG13Wlk_UrUrFDq_eucf5a-IY';
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "A1:H1000"
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length === 0) return null;
+
+    const targetName = String(name).trim();
+    const targetNormalized = removeVietnameseAccents(targetName);
+
+    let matchedRow: any[] | null = null;
+    
+    // First pass: exact match (ignoring case and whitespace)
+    for (const row of rows) {
+      if (!row || row.length === 0) continue;
+      for (let colIdx = 0; colIdx < Math.min(row.length, 4); colIdx++) {
+        const cellVal = String(row[colIdx] || '').trim().toLowerCase();
+        if (cellVal === targetName.toLowerCase()) {
+          matchedRow = row;
+          break;
+        }
+      }
+      if (matchedRow) break;
+    }
+
+    // Second pass: normalized match (removing accents) if exact match not found
+    if (!matchedRow) {
+      for (const row of rows) {
+        if (!row || row.length === 0) continue;
+        for (let colIdx = 0; colIdx < Math.min(row.length, 4); colIdx++) {
+          const cellVal = String(row[colIdx] || '').trim();
+          if (removeVietnameseAccents(cellVal) === targetNormalized) {
+            matchedRow = row;
+            break;
+          }
+        }
+        if (matchedRow) break;
+      }
+    }
+
+    if (matchedRow) {
+      const entitled = String(matchedRow[4] || '0').trim();
+      const used = String(matchedRow[5] || '0').trim();
+      const remaining = String(matchedRow[6] || '0').trim();
+      return { entitled, used, remaining };
+    }
+  } catch (err: any) {
+    console.error("fetchLeaveBalanceHelper error:", err.message);
+  }
+  return null;
+}
 
 // Signature Management Endpoints
 app.get("/api/signatures", async (req, res) => {
@@ -841,7 +923,7 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
 });
 
 app.post("/api/sheets/leave-requests", async (req, res) => {
-  const { name, birthYear, chucDanh, kip, startDate, endDate, reason, phone, location } = req.body;
+  const { name, birthYear, chucDanh, kip, startDate, endDate, reason, phone, location, leaveBalance } = req.body;
   
   if (!name || !chucDanh || !kip || !startDate || !endDate) {
     return res.status(400).json({ error: "Thiếu thông tin bắt buộc" });
@@ -851,6 +933,12 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
   const id = "LEAVE_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
   const dateStr = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
   const status = "Chờ phân ca";
+
+  // Try to get leave balance if not supplied in the request body
+  let finalLeaveBalance = leaveBalance;
+  if (!finalLeaveBalance) {
+    finalLeaveBalance = await fetchLeaveBalanceHelper(name);
+  }
 
   // ALWAYS send Zalo Notification first (unblocked by Google Sheets state)
   sendZaloNotification({
@@ -862,7 +950,8 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
     reason,
     phone,
     location,
-    dateStr
+    dateStr,
+    leaveBalance: finalLeaveBalance
   });
 
   const oauth2Client = getOAuth2Client();
@@ -974,6 +1063,98 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
     } catch (dbErr: any) {
       res.status(500).json({ error: "Lưu đơn thất bại", details: error.message });
     }
+  }
+});
+
+app.get("/api/sheets/leave-balance", async (req, res) => {
+  const { name } = req.query;
+  if (!name) {
+    return res.status(400).json({ error: "Thiếu tên nhân viên" });
+  }
+
+  const oauth2Client = getOAuth2Client();
+  let tokens = null;
+  const tokensStr = req.cookies.google_tokens;
+  if (tokensStr) {
+    try { tokens = JSON.parse(tokensStr); } catch (e) {}
+  }
+  if (!tokens) tokens = await loadTokens();
+
+  if (!tokens) {
+    return res.status(401).json({ error: "Chưa kết nối Google Sheets. Vui lòng kết nối trước." });
+  }
+
+  oauth2Client.setCredentials(tokens);
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const spreadsheetId = '1pH1-Nj4B1nauoEfO5cZG13Wlk_UrUrFDq_eucf5a-IY';
+
+  try {
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: "A1:H1000"
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ error: "Không tìm thấy dữ liệu trong bảng tính" });
+    }
+
+    const targetName = String(name).trim();
+    const targetNormalized = removeVietnameseAccents(targetName);
+
+    let matchedRow: any[] | null = null;
+    
+    // First pass: exact match (ignoring case and whitespace)
+    for (const row of rows) {
+      if (!row || row.length === 0) continue;
+      for (let colIdx = 0; colIdx < Math.min(row.length, 4); colIdx++) {
+        const cellVal = String(row[colIdx] || '').trim().toLowerCase();
+        if (cellVal === targetName.toLowerCase()) {
+          matchedRow = row;
+          break;
+        }
+      }
+      if (matchedRow) break;
+    }
+
+    // Second pass: normalized match (removing accents) if exact match not found
+    if (!matchedRow) {
+      for (const row of rows) {
+        if (!row || row.length === 0) continue;
+        for (let colIdx = 0; colIdx < Math.min(row.length, 4); colIdx++) {
+          const cellVal = String(row[colIdx] || '').trim();
+          if (removeVietnameseAccents(cellVal) === targetNormalized) {
+            matchedRow = row;
+            break;
+          }
+        }
+        if (matchedRow) break;
+      }
+    }
+
+    if (!matchedRow) {
+      return res.status(404).json({ error: `Không tìm thấy thông tin phép năm của đồng chí ${targetName}` });
+    }
+
+    // Extract columns E (index 4), F (index 5), G (index 6)
+    // E: Số ngày phép được hưởng
+    // F: Số ngày phép đã nghỉ
+    // G: Số phép còn lại
+    const entitled = String(matchedRow[4] || '0').trim();
+    const used = String(matchedRow[5] || '0').trim();
+    const remaining = String(matchedRow[6] || '0').trim();
+
+    return res.json({
+      success: true,
+      name: targetName,
+      entitled,
+      used,
+      remaining
+    });
+
+  } catch (error: any) {
+    console.error("Error fetching leave balance:", error);
+    return res.status(500).json({ error: "Lỗi kết nối hoặc không thể lấy dữ liệu", details: error.message });
   }
 });
 

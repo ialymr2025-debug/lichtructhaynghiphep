@@ -660,6 +660,61 @@ async function ensureLeaveSheetExists(sheets: any, spreadsheetId: string) {
   }
 }
 
+async function syncPendingLeavesToSheets(sheets: any, spreadsheetId: string) {
+  try {
+    const db = getFirestoreInstance();
+    const snapshot = await db.collection("pending_leaves").get();
+    if (snapshot.empty) return;
+
+    console.log(`Found ${snapshot.size} pending leaves in Firestore. Syncing to Google Sheets...`);
+    
+    await ensureLeaveSheetExists(sheets, spreadsheetId);
+    
+    const rowsToAppend: any[][] = [];
+    const docIds: string[] = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      const rowValue = [
+        doc.id,
+        data.name,
+        data.birthYear || "",
+        data.chucDanh,
+        String(data.kip),
+        data.startDate,
+        data.endDate,
+        data.reason || "Giải quyết việc riêng gia đình",
+        data.phone || "",
+        data.location || "Gia Lai",
+        data.status || "Chờ phân ca",
+        data.dateStr
+      ];
+      rowsToAppend.push(rowValue);
+      docIds.push(doc.id);
+    });
+
+    if (rowsToAppend.length > 0) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: "DANH_SACH_NGHI!A:L",
+        valueInputOption: "RAW",
+        requestBody: {
+          values: rowsToAppend
+        }
+      });
+      
+      const batch = db.batch();
+      docIds.forEach(id => {
+        batch.delete(db.collection("pending_leaves").doc(id));
+      });
+      await batch.commit();
+      console.log(`Successfully synced ${rowsToAppend.length} leaves to Google Sheets and cleaned up Firestore.`);
+    }
+  } catch (err: any) {
+    console.error("Failed to sync pending leaves to Google Sheets:", err.message);
+  }
+}
+
 app.get("/api/sheets/leave-requests", async (req, res) => {
   const oauth2Client = getOAuth2Client();
   let tokens = null;
@@ -668,13 +723,46 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
     try { tokens = JSON.parse(tokensStr); } catch (e) {}
   }
   if (!tokens) tokens = await loadTokens();
-  if (!tokens) return res.status(401).json({ error: "Chưa kết nối Google Sheets. Vui lòng kết nối trước." });
+
+  // FALLBACK: If not connected to Google Sheets, load from Firestore pending_leaves
+  if (!tokens) {
+    try {
+      const db = getFirestoreInstance();
+      const snapshot = await db.collection("pending_leaves").get();
+      const pendingLeaves: any[] = [];
+      snapshot.forEach(doc => {
+        const item = doc.data();
+        pendingLeaves.push({
+          id: doc.id,
+          name: item.name || "",
+          birthYear: item.birthYear || "",
+          chucDanh: item.chucDanh || "",
+          kip: String(item.kip || ""),
+          startDate: item.startDate || "",
+          endDate: item.endDate || "",
+          reason: item.reason || "",
+          phone: item.phone || "",
+          location: item.location || "",
+          status: item.status || "Chờ phân ca",
+          createdAt: item.dateStr || "",
+          isPendingSync: true
+        });
+      });
+      return res.json(pendingLeaves);
+    } catch (dbErr: any) {
+      console.error("Failed to load pending leaves from Firestore:", dbErr);
+      return res.json([]);
+    }
+  }
 
   oauth2Client.setCredentials(tokens);
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
   const spreadsheetId = '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I';
 
   try {
+    // Try to sync pending leaves from Firestore to Sheets first
+    await syncPendingLeavesToSheets(sheets, spreadsheetId);
+
     await ensureLeaveSheetExists(sheets, spreadsheetId);
     
     const response = await sheets.spreadsheets.values.get({
@@ -683,39 +771,65 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
     });
     
     const rows = response.data.values;
-    if (!rows || rows.length <= 1) {
-      return res.json([]);
-    }
-
-    const headers = rows[0];
     const leaveRequests: any[] = [];
     
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || row.length === 0 || !row[0]) continue;
-      
-      const item: any = { rowIndex: i + 1 };
-      headers.forEach((header: string, index: number) => {
-        item[header] = row[index] || "";
+    // Also include any leftover pending leaves in the Firestore cache
+    try {
+      const db = getFirestoreInstance();
+      const snapshot = await db.collection("pending_leaves").get();
+      snapshot.forEach(doc => {
+        const item = doc.data();
+        leaveRequests.push({
+          id: doc.id,
+          name: item.name || "",
+          birthYear: item.birthYear || "",
+          chucDanh: item.chucDanh || "",
+          kip: String(item.kip || ""),
+          startDate: item.startDate || "",
+          endDate: item.endDate || "",
+          reason: item.reason || "",
+          phone: item.phone || "",
+          location: item.location || "",
+          status: item.status || "Chờ phân ca",
+          createdAt: item.dateStr || "",
+          isPendingSync: true
+        });
       });
-      
-      const leaveChucDanh = (item["Chức danh"] || "") === "Trực phụ cơ MR" ? "Trực phụ máy MR" : (item["Chức danh"] || "");
-      const leave = {
-        id: item["Mã đơn"] || "",
-        name: item["Họ và tên"] || "",
-        birthYear: item["Năm sinh"] || "",
-        chucDanh: leaveChucDanh,
-        kip: item["Kíp"] || "",
-        startDate: item["Từ ngày"] || "",
-        endDate: item["Đến ngày"] || "",
-        reason: item["Lý do"] || "",
-        phone: item["Điện thoại"] || "",
-        location: item["Địa điểm"] || "",
-        status: item["Trạng thái"] || "",
-        createdAt: item["Ngày tạo"] || "",
-        rowIndex: item.rowIndex
-      };
-      leaveRequests.push(leave);
+    } catch (dbErr) {}
+
+    if (rows && rows.length > 1) {
+      const headers = rows[0];
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || row.length === 0 || !row[0]) continue;
+        
+        const item: any = { rowIndex: i + 1 };
+        headers.forEach((header: string, index: number) => {
+          item[header] = row[index] || "";
+        });
+        
+        const leaveChucDanh = (item["Chức danh"] || "") === "Trực phụ cơ MR" ? "Trực phụ máy MR" : (item["Chức danh"] || "");
+        
+        // Prevent duplicates if already loaded from Firestore pending cache
+        if (leaveRequests.some(l => l.id === item["Mã đơn"])) continue;
+
+        const leave = {
+          id: item["Mã đơn"] || "",
+          name: item["Họ và tên"] || "",
+          birthYear: item["Năm sinh"] || "",
+          chucDanh: leaveChucDanh,
+          kip: item["Kíp"] || "",
+          startDate: item["Từ ngày"] || "",
+          endDate: item["Đến ngày"] || "",
+          reason: item["Lý do"] || "",
+          phone: item["Điện thoại"] || "",
+          location: item["Địa điểm"] || "",
+          status: item["Trạng thái"] || "",
+          createdAt: item["Ngày tạo"] || "",
+          rowIndex: item.rowIndex
+        };
+        leaveRequests.push(leave);
+      }
     }
     
     res.json(leaveRequests);
@@ -727,19 +841,6 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
 });
 
 app.post("/api/sheets/leave-requests", async (req, res) => {
-  const oauth2Client = getOAuth2Client();
-  let tokens = null;
-  const tokensStr = req.cookies.google_tokens;
-  if (tokensStr) {
-    try { tokens = JSON.parse(tokensStr); } catch (e) {}
-  }
-  if (!tokens) tokens = await loadTokens();
-  if (!tokens) return res.status(401).json({ error: "Chưa kết nối Google Sheets." });
-
-  oauth2Client.setCredentials(tokens);
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const spreadsheetId = '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I';
-
   const { name, birthYear, chucDanh, kip, startDate, endDate, reason, phone, location } = req.body;
   
   if (!name || !chucDanh || !kip || !startDate || !endDate) {
@@ -747,13 +848,71 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
   }
 
   const normalizedChucDanh = chucDanh === "Trực phụ cơ MR" ? "Trực phụ máy MR" : chucDanh;
+  const id = "LEAVE_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+  const dateStr = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+  const status = "Chờ phân ca";
+
+  // ALWAYS send Zalo Notification first (unblocked by Google Sheets state)
+  sendZaloNotification({
+    name,
+    chucDanh: normalizedChucDanh,
+    kip: String(kip),
+    startDate,
+    endDate,
+    reason,
+    phone,
+    location,
+    dateStr
+  });
+
+  const oauth2Client = getOAuth2Client();
+  let tokens = null;
+  const tokensStr = req.cookies.google_tokens;
+  if (tokensStr) {
+    try { tokens = JSON.parse(tokensStr); } catch (e) {}
+  }
+  if (!tokens) tokens = await loadTokens();
+
+  // If Google Sheets is not authorized, save to Firestore pending_leaves
+  if (!tokens) {
+    try {
+      const db = getFirestoreInstance();
+      await db.collection("pending_leaves").doc(id).set({
+        name,
+        birthYear: birthYear || "",
+        chucDanh: normalizedChucDanh,
+        kip,
+        startDate,
+        endDate,
+        reason: reason || "Giải quyết việc riêng gia đình",
+        phone: phone || "",
+        location: location || "Gia Lai",
+        status,
+        dateStr,
+        createdAt: new Date().toISOString()
+      });
+      
+      return res.json({ 
+        success: true, 
+        message: `✅ Đã lưu đơn của đồng chí ${name} lên hệ thống và gửi thông báo Zalo thành công! (Sẽ tự động đồng bộ lên Google Sheets sau)`,
+        id,
+        status
+      });
+    } catch (dbErr: any) {
+      console.error("Failed to save pending leave:", dbErr);
+      return res.status(500).json({ error: "Lưu đơn thất bại. Không thể lưu vào hệ thống." });
+    }
+  }
+
+  oauth2Client.setCredentials(tokens);
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const spreadsheetId = '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I';
 
   try {
+    // Attempt auto-sync of any previous pending leaves first
+    await syncPendingLeavesToSheets(sheets, spreadsheetId);
+
     await ensureLeaveSheetExists(sheets, spreadsheetId);
-    
-    const id = "LEAVE_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
-    const dateStr = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-    const status = "Chờ phân ca";
     
     const rowValue = [
       id,
@@ -779,24 +938,42 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
       }
     });
 
-    // Send Zalo Notification asynchronously so it doesn't block the response
-    sendZaloNotification({
-      name,
-      chucDanh: normalizedChucDanh,
-      kip: String(kip),
-      startDate,
-      endDate,
-      reason,
-      phone,
-      location,
-      dateStr
+    res.json({ 
+      success: true, 
+      message: `✅ Đã lưu đơn của đồng chí ${name} lên Google Sheets và gửi thông báo Zalo thành công!`,
+      id, 
+      status 
     });
-
-    res.json({ success: true, id, status });
   } catch (error: any) {
-    console.error("Error creating leave request:", error);
-    if (await handleAuthErrorIfAny(error, res)) return;
-    res.status(500).json({ error: "Failed to create leave request", details: error.message });
+    console.error("Error saving leave request to Sheets, saving to Firestore as fallback:", error);
+    
+    // Save to Firestore so it is not lost, and we can retry later
+    try {
+      const db = getFirestoreInstance();
+      await db.collection("pending_leaves").doc(id).set({
+        name,
+        birthYear: birthYear || "",
+        chucDanh: normalizedChucDanh,
+        kip,
+        startDate,
+        endDate,
+        reason: reason || "Giải quyết việc riêng gia đình",
+        phone: phone || "",
+        location: location || "Gia Lai",
+        status,
+        dateStr,
+        createdAt: new Date().toISOString()
+      });
+      
+      res.json({ 
+        success: true, 
+        message: `✅ Đã gửi thông báo Zalo & lưu đơn của đồng chí ${name} thành công! (Do Google Sheets đang gián đoạn, đơn đã được lưu tạm trên hệ thống).`,
+        id,
+        status
+      });
+    } catch (dbErr: any) {
+      res.status(500).json({ error: "Lưu đơn thất bại", details: error.message });
+    }
   }
 });
 

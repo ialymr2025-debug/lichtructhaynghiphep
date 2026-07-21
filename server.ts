@@ -23,7 +23,7 @@ async function sendZaloNotification(data: {
   location: string;
   dateStr: string;
 }) {
-  let webhookUrl = process.env.ZALO_WEBHOOK_URL || "https://committed-intellectual-lunch-clone.trycloudflare.com/webhook/notify";
+  let webhookUrl = process.env.ZALO_WEBHOOK_URL || "https://vhialy.dpdns.org/webhook/notify";
   
   if (!process.env.ZALO_WEBHOOK_URL) {
     try {
@@ -33,8 +33,12 @@ async function sendZaloNotification(data: {
         const docData = doc.data();
         if (docData && docData.config && docData.config.zaloWebhookUrl) {
           let url = docData.config.zaloWebhookUrl;
-          if (url.includes("cookies-blue-pen-bikini.trycloudflare.com")) {
-            url = "https://specialists-intro-exterior-advocacy.trycloudflare.com/webhook/notify";
+          if (
+            url.includes("cookies-blue-pen-bikini.trycloudflare.com") || 
+            url.includes("specialists-intro-exterior-advocacy.trycloudflare.com") ||
+            url.includes("committed-intellectual-lunch-clone.trycloudflare.com")
+          ) {
+            url = "https://vhialy.dpdns.org/webhook/notify";
           }
           webhookUrl = url;
         }
@@ -445,13 +449,21 @@ app.get("/api/app-settings", async (req, res) => {
         }
 
         // Migrate Zalo Webhook URL
-        if (data.config && data.config.zaloWebhookUrl && data.config.zaloWebhookUrl.includes("cookies-blue-pen-bikini.trycloudflare.com")) {
-          data.config.zaloWebhookUrl = "https://specialists-intro-exterior-advocacy.trycloudflare.com/webhook/notify";
+        if (
+          data.config && 
+          data.config.zaloWebhookUrl && 
+          (
+            data.config.zaloWebhookUrl.includes("cookies-blue-pen-bikini.trycloudflare.com") || 
+            data.config.zaloWebhookUrl.includes("specialists-intro-exterior-advocacy.trycloudflare.com") ||
+            data.config.zaloWebhookUrl.includes("committed-intellectual-lunch-clone.trycloudflare.com")
+          )
+        ) {
+          data.config.zaloWebhookUrl = "https://vhialy.dpdns.org/webhook/notify";
           try {
             await db.collection("config").doc("app_settings").set({
               config: data.config
             }, { merge: true });
-            console.log("Migrated 'zaloWebhookUrl' to 'specialists-intro-exterior-advocacy' in Firestore settings.");
+            console.log("Migrated 'zaloWebhookUrl' to 'vhialy.dpdns.org' in Firestore settings.");
           } catch (saveErr) {
             console.error("Failed to save migrated zaloWebhookUrl in Firestore", saveErr);
           }

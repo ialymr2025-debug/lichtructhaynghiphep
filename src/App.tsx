@@ -220,7 +220,6 @@ export default function App() {
   }, [staffData, config, isSettingsLoaded]);
 
   const fetchWaitingLeaves = useCallback(async () => {
-    if (!isGoogleAuth) return;
     setIsLoadingWaitingLeaves(true);
     try {
       const res = await fetch('/api/sheets/leave-requests');
@@ -237,25 +236,19 @@ export default function App() {
       } else {
         if (res.status === 401) {
           setIsGoogleAuth(false);
-          setAlert("⚠ Phiên kết nối Google Sheets đã hết hạn. Vui lòng kết nối lại tài khoản.");
         }
-        console.error("Failed to fetch leave requests from Sheets");
+        console.error("Failed to fetch leave requests");
       }
     } catch (e) {
       console.error("Error fetching live leaves request", e);
     } finally {
       setIsLoadingWaitingLeaves(false);
     }
-  }, [isGoogleAuth]);
+  }, []);
 
   useEffect(() => {
-    if (isGoogleAuth) {
-      fetchWaitingLeaves();
-    } else {
-      setWaitingLeaves([]);
-      setSelectedWaitingLeaveIds([]);
-    }
-  }, [isGoogleAuth, fetchWaitingLeaves]);
+    fetchWaitingLeaves();
+  }, [fetchWaitingLeaves]);
 
   const handleConnectGoogle = () => {
     const width = 500, height = 600;
@@ -692,10 +685,6 @@ export default function App() {
   };
 
   const saveLeaveToGoogleSheets = async () => {
-    if (!isGoogleAuth) {
-      setAlert("⚠ Vui lòng kết nối Google Sheets trước để lưu đơn.");
-      return;
-    }
     if (!leaveData.name) {
       setAlert("⚠ Vui lòng nhập Họ và tên người xin nghỉ.");
       return;
@@ -707,16 +696,16 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(leaveData)
       });
+      const resData = await res.json();
       if (res.ok) {
-        setAlert(`✅ Đã lưu đơn của đồng chí ${leaveData.name} lên Google Sheets ở trạng thái Chờ phân ca!`);
+        setAlert(resData.message || `✅ Đã lưu đơn của đồng chí ${leaveData.name} lên hệ thống ở trạng thái Chờ phân ca!`);
         fetchWaitingLeaves();
         setShowPreview(false);
       } else {
-        const errData = await res.json();
-        if (res.status === 401 || errData.auth_expired) {
+        if (res.status === 401 || resData.auth_expired) {
           setIsGoogleAuth(false);
         }
-        setAlert(`❌ Lưu đơn thất bại: ${errData.error || "Lỗi máy chủ"}`);
+        setAlert(`❌ Lưu đơn thất bại: ${resData.error || "Lỗi máy chủ"}`);
       }
     } catch (e: any) {
       setAlert(`❌ Đã xảy ra lỗi kết nối: ${e.message}`);

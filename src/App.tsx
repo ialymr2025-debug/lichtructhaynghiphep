@@ -97,6 +97,53 @@ export default function App() {
   });
   const [isPreviewingLeave, setIsPreviewingLeave] = useState(false);
 
+  // States for Staff Leave Balance from Google Sheets
+  const [leaveBalance, setLeaveBalance] = useState<{ entitled: string; used: string; remaining: string } | null>(null);
+  const [isLoadingLeaveBalance, setIsLoadingLeaveBalance] = useState(false);
+  const [leaveBalanceError, setLeaveBalanceError] = useState<string | null>(null);
+
+  const fetchLeaveBalance = useCallback(async (name: string) => {
+    if (!name || name.trim() === '') {
+      setLeaveBalance(null);
+      setLeaveBalanceError(null);
+      return;
+    }
+    setIsLoadingLeaveBalance(true);
+    setLeaveBalanceError(null);
+    try {
+      const res = await fetch(`/api/sheets/leave-balance?name=${encodeURIComponent(name.trim())}`);
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setLeaveBalance({
+          entitled: data.entitled,
+          used: data.used,
+          remaining: data.remaining
+        });
+      } else {
+        setLeaveBalance(null);
+        setLeaveBalanceError(data.error || "Không tìm thấy thông tin phép năm");
+      }
+    } catch (err: any) {
+      setLeaveBalance(null);
+      setLeaveBalanceError("Không thể kết nối máy chủ để lấy thông tin phép năm");
+    } finally {
+      setIsLoadingLeaveBalance(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const nameStr = (leaveData.name || '').trim();
+    if (!nameStr) {
+      setLeaveBalance(null);
+      setLeaveBalanceError(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      fetchLeaveBalance(nameStr);
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [leaveData.name, fetchLeaveBalance]);
+
   // Google Sheets Leave Queues States
   const [waitingLeaves, setWaitingLeaves] = useState<any[]>([]);
   const [isLoadingWaitingLeaves, setIsLoadingWaitingLeaves] = useState(false);
@@ -691,10 +738,18 @@ export default function App() {
     }
     setIsSavingLeaveToSheets(true);
     try {
+      const payload = {
+        ...leaveData,
+        leaveBalance: leaveBalance ? {
+          entitled: leaveBalance.entitled,
+          used: leaveBalance.used,
+          remaining: leaveBalance.remaining
+        } : null
+      };
       const res = await fetch('/api/sheets/leave-requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(leaveData)
+        body: JSON.stringify(payload)
       });
       const resData = await res.json();
       if (res.ok) {
@@ -1297,6 +1352,47 @@ export default function App() {
               value={leaveData.location} 
               onChange={e => setLeaveData({...leaveData, location: e.target.value})} 
             />
+          </div>
+
+          {/* Leave Balance Box from Google Sheets */}
+          <div className="col-span-2 mt-2 p-3 bg-slate-50 border border-slate-100 rounded-xl">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-[12px] font-bold text-slate-700 uppercase tracking-wider">Thông tin phép năm </span>
+              {leaveData.name && (
+                <button 
+                  type="button" 
+                  onClick={() => fetchLeaveBalance(leaveData.name)}
+                  className="text-xs text-[#00529c] hover:underline flex items-center gap-1 font-semibold cursor-pointer"
+                  disabled={isLoadingLeaveBalance}
+                >
+                  {isLoadingLeaveBalance ? <span className="spin mr-1"></span> : '🔄'} Cập nhật
+                </button>
+              )}
+            </div>
+            {isLoadingLeaveBalance ? (
+              <div className="text-xs text-slate-500 py-2 flex items-center gap-2 justify-center">
+                <span className="spin"></span> Đang tải thông tin phép năm ...
+              </div>
+            ) : leaveBalance ? (
+              <div className="grid grid-cols-3 gap-2">
+                <div className="bg-blue-50/60 p-2.5 rounded-lg border border-blue-100 text-center">
+                  <div className="text-[10px] text-blue-700 font-medium uppercase">Phép được hưởng</div>
+                  <div className="text-lg font-extrabold text-blue-900 mt-0.5">{leaveBalance.entitled} <span className="text-xs font-normal">ngày</span></div>
+                </div>
+                <div className="bg-amber-50/60 p-2.5 rounded-lg border border-amber-100 text-center">
+                  <div className="text-[10px] text-amber-700 font-medium uppercase">Phép đã nghỉ</div>
+                  <div className="text-lg font-extrabold text-amber-900 mt-0.5">{leaveBalance.used} <span className="text-xs font-normal">ngày</span></div>
+                </div>
+                <div className="bg-emerald-50/60 p-2.5 rounded-lg border border-emerald-100 text-center">
+                  <div className="text-[10px] text-emerald-700 font-medium uppercase">Phép còn lại</div>
+                  <div className="text-lg font-extrabold text-emerald-900 mt-0.5">{leaveBalance.remaining} <span className="text-xs font-normal">ngày</span></div>
+                </div>
+              </div>
+            ) : leaveBalanceError ? (
+              <div className="text-xs text-amber-600 font-medium p-2 bg-amber-50 rounded-lg border border-amber-100 text-center">
+                ⚠ {leaveBalanceError}
+              </div>
+            ) : null}
           </div>
         </div>
         <div className="flex gap-3 mt-4 flex-wrap">
@@ -1944,7 +2040,7 @@ export default function App() {
                     disabled={isSavingLeaveToSheets || !leaveData.name}
                   >
                     {isSavingLeaveToSheets ? <span className="spin spinw mr-2"></span> : '☁️ '}
-                    {isSavingLeaveToSheets ? 'Đang lưu...' : 'Lưu lên hệ thống (Chờ phân ca)'}
+                    {isSavingLeaveToSheets ? 'Đang lưu...' : 'Lưu lên hệ thống'}
                   </button>
                   <button className="btn btn-primary" onClick={handleExportLeave}>Tải xuống Word</button>
                 </>

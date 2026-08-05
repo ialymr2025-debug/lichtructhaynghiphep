@@ -23,7 +23,24 @@ export interface ResultItem {
   relievedKip?: number;
 }
 
-export function buildMultiLeaveResults(danhSachLichNghi: Leave[], chucdanh: string, dulieunhanvien: string[][]) {
+export interface CustomShiftConfig {
+  baseDate?: Date | string;
+  shifts?: string[][];
+  rules?: Record<number, Record<string, { k: number }>>;
+}
+
+export function buildMultiLeaveResults(
+  danhSachLichNghi: Leave[],
+  chucdanh: string,
+  dulieunhanvien: string[][],
+  customShiftConfig?: CustomShiftConfig
+) {
+  const activeBaseDate = customShiftConfig?.baseDate;
+  const activeShifts = (customShiftConfig?.shifts && customShiftConfig.shifts.length > 0) ? customShiftConfig.shifts : SHIFTS;
+  const activeRules = customShiftConfig?.rules || RULES;
+
+  const fnXacDinhCa = (ngay: any, kip: number) => xacDinhCa(ngay, kip, activeBaseDate, activeShifts);
+
   const danhsachketqua = danhSachLichNghi.map(dongnghi => ({
     ten: dongnghi.ten,
     kip: dongnghi.kip,
@@ -40,7 +57,7 @@ export function buildMultiLeaveResults(danhSachLichNghi: Leave[], chucdanh: stri
     let dem = 0;
     let ngaychao = new Date(dongnghict.start);
     while (ngaychao <= dongnghict.end) {
-      const cahientai = xacDinhCa(ngaychao, dongnghict.kip);
+      const cahientai = fnXacDinhCa(ngaychao, dongnghict.kip);
       if (cahientai !== 'O') dem++;
       ngaychao.setDate(ngaychao.getDate() + 1);
     }
@@ -81,9 +98,9 @@ export function buildMultiLeaveResults(danhSachLichNghi: Leave[], chucdanh: stri
     const danhsachnghingayhomnay = danhSachLichNghi.filter(dongnghi => ngayhientruc >= dongnghi.start && ngayhientruc <= dongnghi.end);
     danhsachnghingayhomnay.forEach(dongnghi => {
       const kipnghi = dongnghi.kip;
-      const cahientai = xacDinhCa(ngayhientruc, kipnghi);
-      if (cahientai !== 'O' && RULES[kipnghi] && RULES[kipnghi][cahientai]) {
-        const kiptructhay = RULES[kipnghi][cahientai].k;
+      const cahientai = fnXacDinhCa(ngayhientruc, kipnghi);
+      if (cahientai !== 'O' && activeRules[kipnghi] && activeRules[kipnghi][cahientai]) {
+        const kiptructhay = activeRules[kipnghi][cahientai].k;
         thongketructhaykip[kiptructhay].total++;
         if (cahientai === 'N') thongketructhaykip[kiptructhay].N++;
         if (cahientai === 'C') thongketructhaykip[kiptructhay].C++;
@@ -115,8 +132,8 @@ export function buildMultiLeaveResults(danhSachLichNghi: Leave[], chucdanh: stri
     const calamviectunhien: Record<number, string> = {};
     const calamviectunhienngaymai: Record<number, string> = {};
     for (let k = 1; k <= 5; k++) {
-      calamviectunhien[k] = xacDinhCa(ngayhientruc, k);
-      calamviectunhienngaymai[k] = xacDinhCa(ngaymai, k);
+      calamviectunhien[k] = fnXacDinhCa(ngayhientruc, k);
+      calamviectunhienngaymai[k] = fnXacDinhCa(ngaymai, k);
     }
 
     const ngayhomtruoc = new Date(ngayhientruc.getTime() - 86400000);
@@ -126,12 +143,12 @@ export function buildMultiLeaveResults(danhSachLichNghi: Leave[], chucdanh: stri
     for (let k = 1; k <= 5; k++) {
       caphanconghomtruoc[k] = (bangphancongngay[khoangayhomtruoc] && bangphancongngay[khoangayhomtruoc][k] != null)
         ? (bangphancongngay[khoangayhomtruoc][k] as string)
-        : xacDinhCa(ngayhomtruoc, k);
+        : fnXacDinhCa(ngayhomtruoc, k);
       
       const prevPrevKey = fmtIn(ngayhomtruochia);
       caphanconghomtruochia[k] = (bangphancongngay[prevPrevKey] && bangphancongngay[prevPrevKey][k] != null)
         ? (bangphancongngay[prevPrevKey][k] as string)
-        : xacDinhCa(ngayhomtruochia, k);
+        : fnXacDinhCa(ngayhomtruochia, k);
     }
     const khoangaymai = fmtIn(ngaymai);
     
@@ -148,7 +165,7 @@ export function buildMultiLeaveResults(danhSachLichNghi: Leave[], chucdanh: stri
         return bangphancongngay[khoangaymuontoi][kip];
       const chancahomsau = chancakhuyahomsau[khoangaymuontoi] || [];
       if (chancahomsau.indexOf(kip) !== -1) return 'O';
-      return xacDinhCa(ngaymuontoi, kip);
+      return fnXacDinhCa(ngaymuontoi, kip);
     }
 
     // Map to track who is originally in which shift today
@@ -177,8 +194,8 @@ export function buildMultiLeaveResults(danhSachLichNghi: Leave[], chucdanh: stri
         };
       }
       
-      const s = xacDinhCa(ngayhientruc, kipnghi);
-      const helperKip = [1, 2, 3, 4, 5].find(k => k !== kipnghi && k !== RULES[kipnghi].N.k && k !== RULES[kipnghi].C.k && k !== RULES[kipnghi].K.k)!;
+      const s = fnXacDinhCa(ngayhientruc, kipnghi);
+      const helperKip = [1, 2, 3, 4, 5].find(k => k !== kipnghi && k !== activeRules[kipnghi]?.N?.k && k !== activeRules[kipnghi]?.C?.k && k !== activeRules[kipnghi]?.K?.k)!;
 
       if (s !== 'O') {
         // Increment tracker
@@ -199,7 +216,7 @@ export function buildMultiLeaveResults(danhSachLichNghi: Leave[], chucdanh: stri
       if (danhSachLichNghi.length === 1 && la_o_tron && !danhsachtatcakipnghi[helperKip]) {
         const cacayeucauhomnay = new Set<string>();
         for (let k = 1; k <= 5; k++) {
-          const st = xacDinhCa(ngayhientruc, k);
+          const st = fnXacDinhCa(ngayhientruc, k);
           if (st !== 'O') cacayeucauhomnay.add(st);
         }
 
@@ -219,18 +236,18 @@ export function buildMultiLeaveResults(danhSachLichNghi: Leave[], chucdanh: stri
           const ngayhientruc_d = tatcangaynghi[khoangay];
           // Chỉ tính trong phạm vi nghỉ của người này để tránh cộng dồn sai từ các kỳ nghỉ khác
           if (ngayhientruc_d < dongnghi.start || ngayhientruc_d > dongnghi.end) return;
-          const s_d = xacDinhCa(ngayhientruc_d, kipnghi);
-          if (s_d !== 'O' && RULES[kipnghi] && RULES[kipnghi][s_d]) {
-            const kiptructhay = RULES[kipnghi][s_d].k;
+          const s_d = fnXacDinhCa(ngayhientruc_d, kipnghi);
+          if (s_d !== 'O' && activeRules[kipnghi] && activeRules[kipnghi][s_d]) {
+            const kiptructhay = activeRules[kipnghi][s_d].k;
             if (s_d === 'N') thongKeTrucThay[kiptructhay].N++;
             if (s_d === 'C') thongKeTrucThay[kiptructhay].C++;
             if (s_d === 'K') thongKeTrucThay[kiptructhay].K++;
           }
         });
 
-        const kipcaN = RULES[kipnghi].N.k;
-        const kipcaC = RULES[kipnghi].C.k;
-        const kipcaK = RULES[kipnghi].K.k;
+        const kipcaN = activeRules[kipnghi]?.N?.k || 1;
+        const kipcaC = activeRules[kipnghi]?.C?.k || 2;
+        const kipcaK = activeRules[kipnghi]?.K?.k || 3;
         
         const demcaN = thongKeTrucThay[kipcaN].N;
         const demcaC = thongKeTrucThay[kipcaC].C;
@@ -269,7 +286,7 @@ else {
   CaBiMatCanDuocBu = caThuBa;
 }
         if (CaBiMatCanDuocBu) {
-          kipduocdoica = RULES[kipnghi][CaBiMatCanDuocBu].k;
+          kipduocdoica = activeRules[kipnghi][CaBiMatCanDuocBu].k;
           // Quan trọng: cadoica phải là ca mà kipduocdoica đang trực tự nhiên hôm nay
           if (kipduocdoica && calamviectunhien[kipduocdoica] !== 'O') {
             cadoica = calamviectunhien[kipduocdoica] as 'N' | 'C' | 'K';
@@ -497,7 +514,7 @@ else {
 
         const cacayeucautructep = new Set<string>();
         for (let k = 1; k <= 5; k++) {
-          const s = xacDinhCa(ngayhientruc, k);
+          const s = fnXacDinhCa(ngayhientruc, k);
           if (s !== 'O') cacayeucautructep.add(s);
         }
 
@@ -526,7 +543,7 @@ else {
             if (lakipnghigoc) {
               // Covering a leave - Good, but prefer rule-based person
               diemso += 1000;
-              let kiptheoquytac = (kipgoc && RULES[kipgoc] && RULES[kipgoc][s]) ? RULES[kipgoc][s].k : null;
+              let kiptheoquytac = (kipgoc && activeRules[kipgoc] && activeRules[kipgoc][s]) ? activeRules[kipgoc][s].k : null;
               
               if (kiptheoquytac === k) diemso -= 500;
             } else {
@@ -601,7 +618,7 @@ else {
     const cacacuoicungduocphan = new Set(Object.values(cauhinhbest));
     const cacayeucauhomnay = new Set<string>();
     for (let k = 1; k <= 5; k++) {
-      const s = xacDinhCa(ngayhientruc, k);
+      const s = fnXacDinhCa(ngayhientruc, k);
       if (s !== 'O') cacayeucauhomnay.add(s);
     }
 
@@ -684,7 +701,7 @@ else {
           // AND the person is actually blocked from their natural shift tomorrow.
           const maxLeaveEnd = danhSachLichNghi.length > 0 ? Math.max(...danhSachLichNghi.map(dongnghi => dongnghi.end.getTime())) : 0;
           const ngaynghimaxdate = new Date(maxLeaveEnd + 86400000);
-          const canhientaihomsau = xacDinhCa(ngaymai, k);
+          const canhientaihomsau = fnXacDinhCa(ngaymai, k);
           
           if (!tatcangaynghi[khoangaymai] && ngaymai <= ngaynghimaxdate && canhientaihomsau === 'K') {
             tatcangaynghi[khoangaymai] = new Date(ngaymai);

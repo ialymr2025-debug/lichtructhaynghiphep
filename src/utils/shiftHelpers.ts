@@ -28,30 +28,77 @@ export function abbrev(n: string) {
   return p.slice(0, -1).map(x => x[0] + '.').join('') + p[p.length - 1];
 }
 
-export function xacDinhCa(ngay: any, kip: number) {
+export function xacDinhCa(ngay: any, kip: number, customBaseDate?: Date | string, customShifts?: string[][]) {
   const date = (typeof ngay === 'string') ? new Date(ngay + (ngay.includes('T') ? '' : 'T00:00:00')) : ngay;
   if (isNaN(date.getTime())) return '';
-  const diff = Math.floor((date.getTime() - BASE_DATE.getTime()) / 86400000);
-  const cycleLen = SHIFTS[0].length;
-  return SHIFTS[kip - 1][((diff % cycleLen) + cycleLen) % cycleLen];
+  
+  let baseDateObj = BASE_DATE;
+  if (customBaseDate) {
+    const parsed = (typeof customBaseDate === 'string') ? new Date(customBaseDate + (customBaseDate.includes('T') ? '' : 'T00:00:00')) : customBaseDate;
+    if (!isNaN(parsed.getTime())) baseDateObj = parsed;
+  }
+
+  const shifts = (customShifts && customShifts.length > 0) ? customShifts : SHIFTS;
+  const diff = Math.floor((date.getTime() - baseDateObj.getTime()) / 86400000);
+  const cycleLen = shifts[0]?.length || 5;
+  const kipIdx = ((kip - 1) % shifts.length + shifts.length) % shifts.length;
+  return shifts[kipIdx][((diff % cycleLen) + cycleLen) % cycleLen] || 'O';
 }
 
 export function timNghi(cd: string, kip: number, staffData: string[][]) {
+  if (!cd || !staffData || !Array.isArray(staffData)) return null;
+  const targetCd = cd.trim().toLowerCase();
+  
+  // 1. Exact match (case-insensitive & trimmed)
   for (let i = 0; i < staffData.length; i++) {
     const r = staffData[i];
-    if (r[0].trim() === cd && r[kip] && r[kip].trim()) return r[kip].trim();
+    if (r && r[0] && r[0].trim().toLowerCase() === targetCd && r[kip] && r[kip].trim()) {
+      return r[kip].trim();
+    }
   }
+
+  // 2. Partial match fallback (e.g. "Trưởng ca" vs "Trưởng ca đập")
+  for (let i = 0; i < staffData.length; i++) {
+    const r = staffData[i];
+    if (r && r[0]) {
+      const rTitle = r[0].trim().toLowerCase();
+      if ((rTitle.includes(targetCd) || targetCd.includes(rTitle)) && r[kip] && r[kip].trim()) {
+        return r[kip].trim();
+      }
+    }
+  }
+
   return null;
 }
 
 export function timThay(kipThay: number, cd: string, staffData: string[][]) {
-  if (kipThay < 1 || kipThay > 5) return '';
+  if (kipThay < 1 || kipThay > 5 || !staffData || !Array.isArray(staffData)) return 'N/A';
+  const targetCd = (cd || '').trim().toLowerCase();
+
+  // 1. Exact match (case-insensitive & trimmed)
   for (let i = 0; i < staffData.length; i++) {
     const r = staffData[i];
-    if (r[0].trim() === cd && r[kipThay] && r[kipThay].trim()) return r[kipThay].trim();
+    if (r && r[0] && r[0].trim().toLowerCase() === targetCd && r[kipThay] && r[kipThay].trim()) {
+      return r[kipThay].trim();
+    }
   }
+
+  // 2. Partial match fallback
   for (let i = 0; i < staffData.length; i++) {
-    if (staffData[i][kipThay] && staffData[i][kipThay].trim()) return staffData[i][kipThay].trim();
+    const r = staffData[i];
+    if (r && r[0]) {
+      const rTitle = r[0].trim().toLowerCase();
+      if ((rTitle.includes(targetCd) || targetCd.includes(rTitle)) && r[kipThay] && r[kipThay].trim()) {
+        return r[kipThay].trim();
+      }
+    }
+  }
+
+  // 3. Fallback to any staff in that kip for the position
+  for (let i = 0; i < staffData.length; i++) {
+    if (staffData[i] && staffData[i][kipThay] && staffData[i][kipThay].trim()) {
+      return staffData[i][kipThay].trim();
+    }
   }
   return 'N/A';
 }

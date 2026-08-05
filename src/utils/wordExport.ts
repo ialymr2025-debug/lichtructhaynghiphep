@@ -131,13 +131,14 @@ function twoCol(lc: string, rc: string, CW: number) {
   ])], [HW, CW - HW]);
 }
 
-function buildDateStr(val: any) {
+function buildDateStr(val: any, locationName: string = 'Gia Lai') {
+  const loc = locationName || 'Gia Lai';
   if (val) {
     const nd = (typeof val === 'string') ? new Date(val + (val.includes('T') ? '' : 'T00:00:00')) : val;
-    if (isNaN(nd.getTime())) return 'Gia Lai, ngày      tháng      năm     ';
-    return 'Gia Lai, ngày ' + nd.getDate() + ' tháng ' + (nd.getMonth() + 1) + ' năm ' + nd.getFullYear();
+    if (isNaN(nd.getTime())) return `${loc}, ngày      tháng      năm     `;
+    return `${loc}, ngày ` + nd.getDate() + ' tháng ' + (nd.getMonth() + 1) + ' năm ' + nd.getFullYear();
   }
-  return 'Gia Lai, ngày      tháng      năm     ';
+  return `${loc}, ngày      tháng      năm     `;
 }
 function isOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string) {
   return !(new Date(aEnd) < new Date(bStart) || new Date(bEnd) < new Date(aStart));
@@ -147,6 +148,7 @@ export function buildDocXml(currentResult: any, config: any) {
   const soVanBan = config.soVanBan || '';
   const nguoiKy = config.nguoiKy || 'Quản Đốc';
   const ngayKyVal = config.ngayKy || '';
+  const locationName = config?.locationName || config?.location || 'Gia Lai';
 
   const CW = 9184, c0 = 2200, c1 = 1500, HW = Math.floor(CW / 2);
   const GRAY = 'D9D9D9';
@@ -210,11 +212,17 @@ export function buildDocXml(currentResult: any, config: any) {
   const swapRows = extraRows.filter((r: any) => r.isSwap);
   const chainRows = extraRows.filter((r: any) => r.isCKChain && !r.isSwap);
 
+  const companyName = (config?.companyName || 'CÔNG TY THỦY ĐIỆN IALY').toUpperCase();
+  const headerWsName = (config?.headerWorkshopName || 'PHÂN XƯỞNG VẬN HÀNH IALY').toUpperCase();
+  const docCodeSuffix = config?.documentCodeSuffix || '/VHIALY';
+  const shortWsName = config?.shortWorkshopName || 'PXVH Ialy';
+  const archiveCode = docCodeSuffix.replace('/', '').trim() || 'VHIALY';
+
   const hdrTbl = wtable([
     wtr([
       wtc({
         w: 4100, borders: false, noMargin: true,
-        content: wpara(wrun('CÔNG TY THỦY ĐIỆN IALY', { size: 24 }), { align: 'center' })
+        content: wpara(wrun(companyName, { size: 24 }), { align: 'center' })
       }),
       wtc({
         w: CW - 4100, borders: false, noMargin: true,
@@ -224,7 +232,7 @@ export function buildDocXml(currentResult: any, config: any) {
     wtr([
       wtc({
         w: 4100, borders: false, noMargin: true,
-        content: wpara(wrun('PHÂN XƯỞNG VẬN HÀNH IALY', { bold: true, size: 24 }), { align: 'center', spAfter: 0 })
+        content: wpara(wrun(headerWsName, { bold: true, size: 24 }), { align: 'center', spAfter: 0 })
           + wline(1400, 4200)
       }),
       wtc({
@@ -236,11 +244,11 @@ export function buildDocXml(currentResult: any, config: any) {
     wtr([
       wtc({
         w: 4100, borders: false, noMargin: true,
-        content: wpara(wrun('Số: ' + (soVanBan || '      ') + '/VHIALY', { size: 24 }), { align: 'center' })
+        content: wpara(wrun('Số: ' + (soVanBan || '      ') + docCodeSuffix, { size: 26 }), { align: 'center' })
       }),
       wtc({
         w: CW - 4100, borders: false, noMargin: true,
-        content: wpara(wrun(buildDateStr(ngayKyVal), { italic: true, size: 24 }), { align: 'center' })
+        content: wpara(wrun(buildDateStr(ngayKyVal, locationName), { italic: true, size: 26 }), { align: 'center' })
       })
     ])
   ], [4100, CW - 4100]);
@@ -436,8 +444,8 @@ validRoles.forEach(role => {
       wtc({
         w: HW, borders: false, content:
           wpara(wrun('Nơi nhận:', { bold: true, italic: true, size: 24 }), { spBefore: 80 })
-          + wpara(wrun('- Các kíp (để t/hiện)', { italic: true, size: 22 }))
-          + wpara(wrun('- Lưu: VHIALY', { italic: true, size: 22 }))
+          + wpara(wrun('- Các kíp (để t/hiện);', { italic: true, size: 22 }))
+          + wpara(wrun(`- Lưu: ${archiveCode}.`, { italic: true, size: 22 }))
       }),
       wtc({
         w: CW - HW, borders: false, content:
@@ -510,7 +518,9 @@ export async function generateWordBlob(currentResult: any, config: any) {
 export function buildLeaveRequestDocXml(data: any, config: any, rIds: any = {}) {
   const { name, birthYear, chucDanh, kip, startDate, endDate, reason, phone, leaveYear, location } = data;
   const nguoiKy = config.nguoiKy || 'Nguyễn Văn Nghị';
+  const chucVuNguoiKy = config.chucVuNguoiKy || 'QUẢN ĐỐC';
   const ngayKyVal = config.ngayKy || '';
+  const locationName = config?.locationName || config?.location || 'Gia Lai';
   const CW = 9184, HW = Math.floor(CW / 2);
 
   const dStart = new Date(startDate + 'T00:00:00');
@@ -519,11 +529,18 @@ export function buildLeaveRequestDocXml(data: any, config: any, rIds: any = {}) 
   const dfEnd = fmtVN(dEnd);
   const currentYear = leaveYear || new Date().getFullYear();
 
+  const companyName = (config?.companyName || 'CÔNG TY THỦY ĐIỆN IALY').toUpperCase();
+  const headerWsName = (config?.headerWorkshopName || 'PHÂN XƯỞNG VẬN HÀNH IALY').toUpperCase();
+  const docCodeSuffix = config?.documentCodeSuffix || '/VHIALY';
+  const recipientWsName = config?.recipientWorkshopName || 'Phân xưởng vận hành Ialy';
+  const shortWsName = config?.shortWorkshopName || 'PXVH Ialy';
+  const archiveCode = docCodeSuffix.replace('/', '') || 'VHIALY';
+
   const hdrTbl = wtable([
     wtr([
       wtc({
         w: 4100, borders: false, noMargin: true,
-        content: wpara(wrun('CÔNG TY THỦY ĐIỆN IALY', { size: 24 }), { align: 'center' })
+        content: wpara(wrun(companyName, { size: 24 }), { align: 'center' })
       }),
       wtc({
         w: CW - 4100, borders: false, noMargin: true,
@@ -533,7 +550,7 @@ export function buildLeaveRequestDocXml(data: any, config: any, rIds: any = {}) 
     wtr([
       wtc({
         w: 4100, borders: false, noMargin: true,
-        content: wpara(wrun('PHÂN XƯỞNG VẬN HÀNH IALY', { bold: true, size: 24 }), { align: 'center', spAfter: 0 })
+        content: wpara(wrun(headerWsName, { bold: true, size: 24 }), { align: 'center', spAfter: 0 })
           + wline(1400, 4100)
       }),
       wtc({
@@ -545,24 +562,24 @@ export function buildLeaveRequestDocXml(data: any, config: any, rIds: any = {}) 
     wtr([
       wtc({
         w: 4100, borders: false, noMargin: true,
-        content: wpara(wrun('Số:        /VHIALY', { size: 24 }), { align: 'center' })
+        content: wpara(wrun(`Số:        ${docCodeSuffix}`, { size: 26 }), { align: 'center' })
       }),
       wtc({
         w: CW - 4100, borders: false, noMargin: true,
-        content: wpara(wrun(buildDateStr(ngayKyVal), { italic: true, size: 24 }), { align: 'center' })
+        content: wpara(wrun(buildDateStr(ngayKyVal, locationName), { italic: true, size: 26 }), { align: 'center' })
       })
     ])
   ], [4100, CW - 4100]);
 
-  const title = wpara(wrun('ĐƠN XIN NGHỈ PHÉP', { bold: true, size: 32 }),
+  const title = wpara(wrun('ĐƠN XIN NGHỈ PHÉP', { bold: true, size: 28 }),
     { align: 'center', spBefore: 240, spAfter: 240 });
 
   const kinhGui = wtable([
     wtr([
-      wtc({ w: 3200, borders: false, content: wpara(wrun('Kính gửi:', { bold: true, size: 28 }), { align: 'right' }) }),
+      wtc({ w: 3200, borders: false, content: wpara(wrun('Kính gửi:', {  size: 28 }), { align: 'right' }) }),
       wtc({ 
         w: CW - 3200, borders: false, 
-        content: wpara(wrun('- Phân xưởng vận hành Ialy;', { size: 28 }))
+        content: wpara(wrun(`- ${recipientWsName};`, { size: 28 }))
                + wpara(wrun('- Phòng Hành chính và Lao động.', { size: 28 }))
       })
     ])
@@ -570,47 +587,84 @@ export function buildLeaveRequestDocXml(data: any, config: any, rIds: any = {}) 
 
   const info1 = wtable([
     wtr([
-      wtc({ w: 5000, borders: false, content: wpara(wrun(`Tên tôi là: ${name}`, { size: 28 })) }),
-      wtc({ w: CW - 5000, borders: false, content: wpara(wrun(`Sinh năm: ${birthYear}`, { size: 28 })) })
+      wtc({
+        w: 5000,
+        borders: false,
+        noMargin: true,
+        content: wpara(wrun(`Tên tôi là: ${name}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } })
+      }),
+      wtc({
+        w: CW - 5000,
+        borders: false,
+        noMargin: true,
+        content: wpara(wrun(`Sinh năm: ${birthYear}`, { size: 28 }), { spBefore: 120 })
+      })
     ]),
     wtr([
-      wtc({ w: 5000, borders: false, content: wpara(wrun(`Hiện đang công tác: PXVH Ialy`, { size: 28 })) }),
-      wtc({ w: CW - 5000, borders: false, content: wpara(wrun(`Chức vụ: ${chucDanh} Kíp ${kip}`, { size: 28 })) })
+      wtc({
+        w: 5000,
+        borders: false,
+        noMargin: true,
+        content: wpara(wrun(`Hiện đang công tác: ${shortWsName}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } })
+      }),
+      wtc({
+        w: CW - 5000,
+        borders: false,
+        noMargin: true,
+        content: wpara(wrun(`Chức vụ: ${chucDanh} Kíp ${kip}`, { size: 28 }), { spBefore: 120 })
+      })
     ])
   ], [5000, CW - 5000]);
 
   const body = [
-    wpara(wrun(`Nay tôi làm đơn này kính đề nghị Lãnh đạo Phân xưởng vận hành Ialy, Phòng Hành chính và Lao động xem xét cho tôi được nghỉ phép với nội dung sau:`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
-    wpara(wrun(`Thời gian: Từ ngày ${dfStart} đến hết ngày ${dfEnd}`, { size: 28 }), { spBefore: 120 }),
-    wpara(wrun(`Địa điểm: ${location || 'Gia Lai'}`, { size: 28 }), { spBefore: 120 }),
-    wpara(wrun(`Lý do: ${reason}`, { size: 28 }), { spBefore: 120 }),
-    wpara(wrun(`Chế độ phép năm: ${currentYear}`, { size: 28 }), { spBefore: 120 }),
-    wpara(wrun(`Điện thoại liên hệ: ${phone}`, { size: 28 }), { spBefore: 120 }),
+    wpara(wrun(`Nay tôi làm đơn này kính đề nghị Lãnh đạo ${recipientWsName}, Phòng Hành chính và Lao động xem xét cho tôi được nghỉ phép với nội dung sau:`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
+    wpara(wrun(`Thời gian: Từ ngày ${dfStart} đến hết ngày ${dfEnd}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
+    wpara(wrun(`Địa điểm: ${location || locationName}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
+    wpara(wrun(`Lý do: ${reason}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
+    wpara(wrun(`Chế độ phép năm: ${currentYear}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
+    wpara(wrun(`Điện thoại liên hệ: ${phone}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
     wpara(wrun(`Kính mong Lãnh đạo xem xét giải quyết.`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
     wpara(wrun(`Tôi xin chân thành cảm ơn./.`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } })
   ].join('');
 
-  const sigWriter = rIds.writer ? wpara(wimage(rIds.writer), { align: 'center' }) : emptyP(1000, 0);
+  const sigWriter = rIds.writer ? wpara(wimage(rIds.writer), { align: 'center' }) : emptyP(150, 0);
+  const sigManager = rIds.manager ? wpara(wimage(rIds.manager), { align: 'center' }) : emptyP(150, 0);
 
   const footTbl = wtable([
     wtr([
       wtc({
         w: 3000, borders: false, content:
           wpara(wrun('Nơi nhận:', { bold: true, italic: true, size: 24 }), { spBefore: 80 })
-          + wpara(wrun('- HCLĐ;', { size: 24 }))
-          + wpara(wrun('- Lưu: VHIALY.', { size: 24 }))
+          + wpara(wrun('- HCLĐ;', { size: 22 }))
+          + wpara(wrun(`- Lưu: ${archiveCode}.`, { size: 22 }))
       }),
       wtc({
         w: 3180, borders: false, content:
-          wpara(wrun('QUẢN ĐỐC', { bold: true, size: 28 }), { align: 'center', spBefore: 80 })
-          + emptyP(500, 0)+ emptyP(500, 0)
-          + wpara(wrun(nguoiKy, { bold: true, size: 28 }), { align: 'center' })
+          wpara(wrun(chucVuNguoiKy.toUpperCase(), { bold: true, size: 28 }), { align: 'center', spBefore: 80 })
       }),
       wtc({
         w: 3180, borders: false, content:
           wpara(wrun('NGƯỜI VIẾT ĐƠN', { bold: true, size: 28 }), { align: 'center', spBefore: 80 })
-          + sigWriter+ emptyP(10, 0) 
-          + wpara(wrun(name, { bold: true, size: 28 }), { align: 'center' })
+      })
+    ]),
+    wtr([
+      wtc({ w: 3000, borders: false, content: emptyP() }),
+      wtc({
+        w: 3180, borders: false, content: sigManager
+      }),
+      wtc({
+        w: 3180, borders: false, content: sigWriter
+      })
+    ]),
+    wtr([
+      wtc({ w: 3000, borders: false, content: emptyP() }),
+      wtc({
+        w: 3180, borders: false, content:
+          wpara(wrun(nguoiKy, { bold: true, size: 28 }), { align: 'center' })
+      }),
+      wtc({
+        w: 3180, borders: false, content:
+          wpara(wrun(name, { bold: true, size: 28 }), { align: 'center' })
       })
     ])
   ], [3000, 3180, 3180]);
@@ -632,16 +686,23 @@ export function buildLeaveRequestDocXml(data: any, config: any, rIds: any = {}) 
 
 export async function generateLeaveRequestBlob(data: any, config: any, signaturesOverride?: Record<string, string>) {
   const { name } = data;
+  const nguoiKy = config?.nguoiKy || 'Nguyễn Văn Nghị';
   
   const rIds: any = {};
   const imagesToAdd: any = [];
 
   const sigWriter = signaturesOverride?.[name] || SIGNATURES[name];
+  const sigManager = signaturesOverride?.[nguoiKy] || SIGNATURES[nguoiKy];
   const isValidBase64 = (s: string) => s && s.length > 50 && !s.includes("PLACEHOLDER");
 
   if (isValidBase64(sigWriter)) {
     rIds.writer = 'rIdImg1';
     imagesToAdd.push({ id: 'rIdImg1', data: sigWriter, name: 'sig_writer.png' });
+  }
+
+  if (isValidBase64(sigManager)) {
+    rIds.manager = 'rIdImg2';
+    imagesToAdd.push({ id: 'rIdImg2', data: sigManager, name: 'sig_manager.png' });
   }
 
   const docXml = buildLeaveRequestDocXml(data, config, rIds);
@@ -716,13 +777,19 @@ export function buildSwapDocXml(swapData: any, config: any, rIds: any = {}) {
   const { date1, date2, person1, person2, shift1, shift2 } = swapData;
   const nguoiKy = config.nguoiKy || 'Nguyễn Văn Nghị';
   const ngayKyVal = config.ngayKy || '';
+  const locationName = config?.locationName || config?.location || 'Gia Lai';
   const CW = 9184, HW = Math.floor(CW / 2);
+
+  const companyName = (config?.companyName || 'CÔNG TY THỦY ĐIỆN IALY').toUpperCase();
+  const headerWsName = (config?.headerWorkshopName || 'PHÂN XƯỞNG VẬN HÀNH IALY').toUpperCase();
+  const docCodeSuffix = config?.documentCodeSuffix || '/VHIALY';
+  const archiveCode = docCodeSuffix.replace('/', '') || 'VHIALY';
 
   const hdrTbl = wtable([
     wtr([
       wtc({
         w: 4100, borders: false, noMargin: true,
-        content: wpara(wrun('CÔNG TY THỦY ĐIỆN IALY', { size: 24 }), { align: 'center' })
+        content: wpara(wrun(companyName, { size: 24 }), { align: 'center' })
       }),
       wtc({
         w: CW - 4100, borders: false, noMargin: true,
@@ -732,7 +799,7 @@ export function buildSwapDocXml(swapData: any, config: any, rIds: any = {}) {
     wtr([
       wtc({
         w: 4100, borders: false, noMargin: true,
-        content: wpara(wrun('PHÂN XƯỞNG VẬN HÀNH IALY', { bold: true, size: 24 }), { align: 'center', spAfter: 0 })
+        content: wpara(wrun(headerWsName, { bold: true, size: 24 }), { align: 'center', spAfter: 0 })
           + wline(1400, 4100)
       }),
       wtc({
@@ -744,11 +811,11 @@ export function buildSwapDocXml(swapData: any, config: any, rIds: any = {}) {
     wtr([
       wtc({
         w: 4100, borders: false, noMargin: true,
-        content: wpara(wrun('Số:        /VHIALY', { size: 24 }), { align: 'center' })
+        content: wpara(wrun(`Số:        ${docCodeSuffix}`, { size: 26 }), { align: 'center' })
       }),
       wtc({
         w: CW - 4100, borders: false, noMargin: true,
-        content: wpara(wrun(buildDateStr(ngayKyVal), { italic: true, size: 24 }), { align: 'center' })
+        content: wpara(wrun(buildDateStr(ngayKyVal, locationName), { italic: true, size: 26 }), { align: 'center' })
       })
     ])
   ], [4100, CW - 4100]);
@@ -790,39 +857,62 @@ export function buildSwapDocXml(swapData: any, config: any, rIds: any = {}) {
     wpara(wrun(`Các chức danh kiểm tra lại lịch trực của mình và tự chịu trách nhiệm trước Phân xưởng nếu không đi ca theo đúng lịch đã đổi./.`, { size: 26 }), { spBefore: 120, indent: { firstLine: 720 } })
   ].join('');
 
-  const sig1 = rIds.person1 ? wpara(wimage(rIds.person1), { align: 'center' }) : emptyP(1000, 0);
-  const sig2 = rIds.person2 ? wpara(wimage(rIds.person2), { align: 'center' }) : emptyP(1000, 0);
-  const sigManager = rIds.manager ? wpara(wimage(rIds.manager), { align: 'center' }) : emptyP(1000, 0);
+  const sig1 = rIds.person1 ? wpara(wimage(rIds.person1), { align: 'center' }) : emptyP(150, 0);
+  const sig2 = rIds.person2 ? wpara(wimage(rIds.person2), { align: 'center' }) : emptyP(150, 0);
+  const sigManager = rIds.manager ? wpara(wimage(rIds.manager), { align: 'center' }) : emptyP(150, 0);
 
   const footTbl = wtable([
     wtr([
       wtc({
         w: 3000, borders: false, content:
-          wpara(wrun('Nơi nhận:', { bold: true, italic: true, size: 22 }), { spBefore: 80 })
-          + wpara(wrun('- LĐPX;', { size: 20 }))
-          + wpara(wrun('- Các cá nhân (để t/h);', { size: 20 }))
-          + wpara(wrun('- Lưu: VHIALY.', { size: 20 }))
+          wpara(wrun('Nơi nhận:', { bold: true, italic: true, size: 24 }), { spBefore: 80 })
+          + wpara(wrun('- LĐPX;', { size: 22 }))
+          + wpara(wrun('- Các cá nhân (để t/h);', { size: 22 }))
+          + wpara(wrun(`- Lưu: ${archiveCode}.`, { size: 22 }))
       }),
       wtc({
         w: 3180, borders: false, content:
           wpara(wrun('NGƯỜI ĐỔI CA', { bold: true, size: 24 }), { align: 'center', spBefore: 80 })
-          + sig1
-          + wpara(wrun(person1, { bold: true, size: 24 }), { align: 'center' })
       }),
       wtc({
         w: 3180, borders: false, content:
           wpara(wrun('NGƯỜI ĐI CA THAY', { bold: true, size: 24 }), { align: 'center', spBefore: 80 })
-          + sig2
-          + wpara(wrun(person2, { bold: true, size: 24 }), { align: 'center' })
+      })
+    ]),
+    wtr([
+      wtc({ w: 3000, borders: false, content: emptyP() }),
+      wtc({ w: 3180, borders: false, content: sig1 }),
+      wtc({ w: 3180, borders: false, content: sig2 })
+    ]),
+    wtr([
+      wtc({ w: 3000, borders: false, content: emptyP() }),
+      wtc({
+        w: 3180, borders: false, content:
+          wpara(wrun(person1, { bold: true, size: 24 }), { align: 'center' })
+      }),
+      wtc({
+        w: 3180, borders: false, content:
+          wpara(wrun(person2, { bold: true, size: 24 }), { align: 'center' })
       })
     ]),
     wtr([
       wtc({ w: 3000, borders: false, content: emptyP() }),
       wtc({
         w: 3180, borders: false, content:
-          wpara(wrun('QUẢN ĐỐC', { bold: true, size: 24 }), { align: 'center', spBefore: 80 })
-          + emptyP(500, 0) + emptyP(500, 0)
-          + wpara(wrun(nguoiKy, { bold: true, size: 24 }), { align: 'center' })
+          wpara(wrun('QUẢN ĐỐC', { bold: true, size: 24 }), { align: 'center', spBefore: 120 })
+      }),
+      wtc({ w: 3180, borders: false, content: emptyP() })
+    ]),
+    wtr([
+      wtc({ w: 3000, borders: false, content: emptyP() }),
+      wtc({ w: 3180, borders: false, content: sigManager }),
+      wtc({ w: 3180, borders: false, content: emptyP() })
+    ]),
+    wtr([
+      wtc({ w: 3000, borders: false, content: emptyP() }),
+      wtc({
+        w: 3180, borders: false, content:
+          wpara(wrun(nguoiKy, { bold: true, size: 24 }), { align: 'center' })
       }),
       wtc({ w: 3180, borders: false, content: emptyP() })
     ])
@@ -975,7 +1065,7 @@ export async function exportAllDocsZip(currentResult: any, leavesList: any[], co
       reason: leave.reason || "Giải quyết việc riêng gia đình",
       phone: leave.phone || "",
       leaveYear: String(new Date(leave.startDate).getFullYear() || new Date().getFullYear()),
-      location: leave.location || "Gia Lai"
+      location: leave.location || config?.locationName || config?.location || "Gia Lai"
     };
     
     const leaveBlob = await generateLeaveRequestBlob(leaveData, config, signatures);

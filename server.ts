@@ -134,16 +134,32 @@ try {
   firebaseConfig = { projectId: process.env.FIREBASE_PROJECT_ID || "default-project" };
 }
 
+let loadedServiceAccount: any = null;
+try {
+  const saPath = path.join(process.cwd(), "service-account.json");
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    loadedServiceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  } else if (fs.existsSync(saPath)) {
+    loadedServiceAccount = JSON.parse(fs.readFileSync(saPath, "utf-8"));
+  }
+} catch (saErr: any) {
+  console.warn("Notice reading service-account.json:", saErr.message || saErr);
+}
+
+if (loadedServiceAccount) {
+  firebaseConfig.projectId = loadedServiceAccount.project_id || firebaseConfig.projectId;
+  firebaseConfig.firestoreDatabaseId = "(default)";
+}
+
 // Initialize Firebase Admin
 if (admin.apps.length === 0) {
   try {
-    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    if (loadedServiceAccount) {
       admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-        projectId: serviceAccount.project_id || firebaseConfig.projectId,
+        credential: admin.credential.cert(loadedServiceAccount),
+        projectId: loadedServiceAccount.project_id || firebaseConfig.projectId,
       });
-      console.log("Firebase Admin initialized with Service Account from ENV");
+      console.log(`Firebase Admin initialized with Service Account for project: ${loadedServiceAccount.project_id}`);
     } else {
       admin.initializeApp({
         projectId: firebaseConfig.projectId,
@@ -211,7 +227,7 @@ const saveTokens = async (newTokens: any) => {
     }
   } catch (e: any) {
     lastFirestoreError = `Save Error: ${e.message}`;
-    console.error("Error saving tokens to Firestore:", e);
+    console.warn("Notice: Save tokens to Firestore notice:", e.message);
   }
 };
 
@@ -229,17 +245,14 @@ const loadTokens = async () => {
       const tokens = await tryLoad(getFirestoreInstance());
       if (tokens) return tokens;
     } catch (e: any) {
-      console.warn("Primary DB load failed, trying fallback:", e.message);
       if (e.code === 5 || e.message?.includes("NOT_FOUND") || e.message?.includes("not found")) {
         const tokens = await tryLoad(getFirestoreInstance(true));
         if (tokens) return tokens;
-      } else {
-        throw e;
       }
     }
   } catch (e: any) {
     lastFirestoreError = `Load Error: ${e.message}`;
-    console.error("Error loading tokens from Firestore:", e);
+    console.warn("Notice: Load tokens from Firestore notice:", e.message);
   }
   return null;
 };
@@ -255,17 +268,14 @@ const clearTokens = async () => {
       await tryClear(getFirestoreInstance());
       lastFirestoreError = null;
     } catch (e: any) {
-      console.warn("Primary DB clear failed, trying fallback:", e.message);
       if (e.code === 5 || e.message?.includes("NOT_FOUND") || e.message?.includes("not found")) {
         await tryClear(getFirestoreInstance(true));
         lastFirestoreError = null;
-      } else {
-        throw e;
       }
     }
   } catch (e: any) {
     lastFirestoreError = `Clear Error: ${e.message}`;
-    console.error("Error clearing tokens from Firestore:", e);
+    console.warn("Notice: Clear tokens from Firestore notice:", e.message);
   }
 };
 
@@ -390,7 +400,204 @@ function removeVietnameseAccents(str: string): string {
     .trim();
 }
 
-async function fetchLeaveBalanceHelper(name: string): Promise<{ entitled: string; used: string; remaining: string } | null> {
+function serializeForFirestore(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj !== 'object') return obj;
+
+  if (Array.isArray(obj)) {
+    if (obj.some(item => Array.isArray(item))) {
+      return JSON.stringify(obj);
+    }
+    return obj.map(serializeForFirestore);
+  }
+
+  const result: Record<string, any> = {};
+  for (const key of Object.keys(obj)) {
+    result[key] = serializeForFirestore(obj[key]);
+  }
+  return result;
+}
+
+function deserializeFromFirestore(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') {
+    const trimmed = obj.trim();
+    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return deserializeFromFirestore(parsed);
+      } catch (e) {
+        return obj;
+      }
+    }
+    return obj;
+  }
+  if (typeof obj !== 'object') return obj;
+
+  if (Array.isArray(obj)) {
+    return obj.map(deserializeFromFirestore);
+  }
+
+  const result: Record<string, any> = {};
+  for (const key of Object.keys(obj)) {
+    result[key] = deserializeFromFirestore(obj[key]);
+  }
+  return result;
+}
+
+const SHIFTS_CYCLE = [
+  ["N","C","O","K","O"],
+  ["K","O","N","C","O"],
+  ["C","O","K","O","N"],
+  ["O","N","C","O","K"],
+  ["O","K","O","N","C"]
+];
+const BASE_DATE_REF = new Date(2025, 9, 1); // 01/10/2025
+
+function xacDinhCaHelper(ngay: Date, kip: number): string {
+  if (!ngay || isNaN(ngay.getTime()) || kip < 1 || kip > 5) return 'O';
+  const d1 = new Date(ngay.getFullYear(), ngay.getMonth(), ngay.getDate());
+  const d2 = new Date(BASE_DATE_REF.getFullYear(), BASE_DATE_REF.getMonth(), BASE_DATE_REF.getDate());
+  const diffDays = Math.round((d1.getTime() - d2.getTime()) / 86400000);
+  const kipIdx = ((kip - 1) % 5 + 5) % 5;
+  const cycleIdx = ((diffDays % 5) + 5) % 5;
+  return SHIFTS_CYCLE[kipIdx][cycleIdx] || 'O';
+}
+
+function calculateLeaveDays(startDateStr?: string, endDateStr?: string, kip?: number | string): number {
+  if (!startDateStr) return 1;
+  
+  const parseVN = (s: string) => {
+    if (!s) return null;
+    const str = String(s).trim();
+    // Handle Excel serial date numbers (e.g. 45500)
+    if (/^\d{5}(\.\d+)?$/.test(str)) {
+      const serial = parseFloat(str);
+      const utc_days = Math.floor(serial - 25569);
+      const utc_value = utc_days * 86400;
+      return new Date(utc_value * 1000);
+    }
+
+    const parts = str.split(/[\/\-\.]/);
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        // YYYY-MM-DD
+        const y = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        const d = parseInt(parts[2], 10);
+        if (!isNaN(d) && !isNaN(m) && !isNaN(y)) return new Date(y, m, d);
+      } else {
+        // DD/MM/YYYY
+        const d = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10) - 1;
+        const y = parseInt(parts[2], 10);
+        if (!isNaN(d) && !isNaN(m) && !isNaN(y)) return new Date(y, m, d);
+      }
+    }
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  try {
+    const start = parseVN(startDateStr);
+    const end = endDateStr ? parseVN(endDateStr) : start;
+    if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) return 1;
+
+    // Sanity check: Leave requests year must be realistic (>= 2020)
+    const currentYear = new Date().getFullYear();
+    if (start.getFullYear() < 2020 || start.getFullYear() > currentYear + 2) {
+      return 1;
+    }
+
+    let numKip = 0;
+    if (typeof kip === 'number') numKip = kip;
+    else if (typeof kip === 'string') {
+      const match = kip.match(/\d+/);
+      if (match) numKip = parseInt(match[0], 10);
+    }
+
+    if (numKip >= 1 && numKip <= 5) {
+      let workShifts = 0;
+      let cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+      const endClean = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+      let maxDays = 60;
+      while (cur <= endClean && maxDays > 0) {
+        maxDays--;
+        const shiftType = xacDinhCaHelper(cur, numKip);
+        if (shiftType !== 'O') {
+          workShifts++;
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+      return workShifts;
+    }
+
+    const diffTime = Math.abs(end.getTime() - start.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    if (diffDays > 30) return 1;
+    return diffDays > 0 ? diffDays : 1;
+  } catch (e) {
+    return 1;
+  }
+}
+
+function calculateLeaveBalanceLogic(
+  oldLeavesInput: number | string,
+  newLeavesInput: number | string,
+  usedLeavesInput: number | string,
+  currentDateObj: Date = new Date()
+) {
+  const oldLeaves = Math.max(0, parseFloat(String(oldLeavesInput)) || 0);
+  const newLeaves = Math.max(0, parseFloat(String(newLeavesInput)) || 12);
+  const usedLeaves = Math.max(0, parseFloat(String(usedLeavesInput)) || 0);
+
+  const month = currentDateObj.getMonth() + 1; // 1..12
+  const isBeforeMarch31 = month <= 3;
+
+  let remaining = 0;
+  let note = "";
+
+  if (isBeforeMarch31) {
+    const totalEntitled = oldLeaves + newLeaves;
+    remaining = Math.max(0, totalEntitled - usedLeaves);
+    
+    if (oldLeaves > 0) {
+      if (usedLeaves < oldLeaves) {
+        note = `Đang ưu tiên trừ phép năm cũ (còn ${oldLeaves - usedLeaves}/${oldLeaves} ngày năm cũ, hạn đến 31/03).`;
+      } else {
+        note = `Đã dùng hết ${oldLeaves} ngày phép năm cũ trong Q1. Số ngày nghỉ còn lại trừ vào phép năm mới.`;
+      }
+    } else {
+      note = `Không có phép năm cũ. Trừ trực tiếp vào phép năm mới (${newLeaves} ngày).`;
+    }
+  } else {
+    const usedDeductedFromNew = Math.max(0, usedLeaves - oldLeaves);
+    remaining = Math.max(0, newLeaves - usedDeductedFromNew);
+
+    if (oldLeaves > 0) {
+      const expiredOldLeaves = Math.max(0, oldLeaves - usedLeaves);
+      if (expiredOldLeaves > 0) {
+        note = `Phép năm cũ (${expiredOldLeaves} ngày chưa dùng) đã tự động hết hạn từ 31/03. Đang tính phép năm mới (${newLeaves} ngày).`;
+      } else {
+        note = `Phép năm cũ đã dùng hết từ Q1. Chỉ còn tính phép năm mới.`;
+      }
+    } else {
+      note = `Tính theo tiêu chuẩn phép năm mới (${newLeaves} ngày).`;
+    }
+  }
+
+  return {
+    oldLeaves,
+    newLeaves,
+    usedLeaves,
+    entitled: isBeforeMarch31 ? (oldLeaves + newLeaves) : newLeaves,
+    remaining,
+    isBeforeMarch31,
+    note
+  };
+}
+
+async function fetchLeaveBalanceHelper(name: string, customSheetId?: string): Promise<{ entitled: string; used: string; remaining: string; note?: string; oldLeaves?: string; newLeaves?: string } | null> {
   try {
     const oauth2Client = getOAuth2Client();
     let tokens = await loadTokens();
@@ -398,11 +605,18 @@ async function fetchLeaveBalanceHelper(name: string): Promise<{ entitled: string
 
     oauth2Client.setCredentials(tokens);
     const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-    const spreadsheetId = '1pH1-Nj4B1nauoEfO5cZG13Wlk_UrUrFDq_eucf5a-IY';
+    const spreadsheetId = customSheetId ? extractSpreadsheetId(customSheetId) : resolveSpreadsheetId();
+
+    let targetSheetName = "Số ngày phép";
+    try {
+      const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+      const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
+      targetSheetName = sheetNames.find(n => n?.toLowerCase().trim() === "số ngày phép") || sheetNames[0] || "Số ngày phép";
+    } catch (e) {}
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "A1:H1000"
+      range: `'${targetSheetName}'!A1:I1000`
     });
 
     const rows = response.data.values;
@@ -413,7 +627,7 @@ async function fetchLeaveBalanceHelper(name: string): Promise<{ entitled: string
 
     let matchedRow: any[] | null = null;
     
-    // First pass: exact match (ignoring case and whitespace)
+    // First pass: exact match
     for (const row of rows) {
       if (!row || row.length === 0) continue;
       for (let colIdx = 0; colIdx < Math.min(row.length, 4); colIdx++) {
@@ -426,7 +640,7 @@ async function fetchLeaveBalanceHelper(name: string): Promise<{ entitled: string
       if (matchedRow) break;
     }
 
-    // Second pass: normalized match (removing accents) if exact match not found
+    // Second pass: normalized match
     if (!matchedRow) {
       for (const row of rows) {
         if (!row || row.length === 0) continue;
@@ -441,11 +655,43 @@ async function fetchLeaveBalanceHelper(name: string): Promise<{ entitled: string
       }
     }
 
+    // Dynamic header column mapping
+    const headerRow = rows[0] || [];
+    let oldLeavesCol = 4; // Column E
+    let newLeavesCol = 5; // Column F (Phép năm mới được hưởng)
+    let usedCol = 6;      // Column G (Phép đã nghỉ năm)
+    let remainingCol = 7; // Column H (Phép còn lại hiện tại)
+
+    for (let c = 0; c < headerRow.length; c++) {
+      const hText = removeVietnameseAccents(String(headerRow[c] || '')).toLowerCase();
+      if (hText.includes("nam cu") || hText.includes("phep nam cu")) {
+        oldLeavesCol = c;
+      } else if (hText.includes("nam moi") || hText.includes("duoc huong") || hText.includes("dinh muc")) {
+        newLeavesCol = c;
+      } else if (hText.includes("da nghi")) {
+        usedCol = c;
+      } else if (hText.includes("con lai")) {
+        remainingCol = c;
+      }
+    }
+
     if (matchedRow) {
-      const entitled = String(matchedRow[4] || '0').trim();
-      const used = String(matchedRow[5] || '0').trim();
-      const remaining = String(matchedRow[6] || '0').trim();
-      return { entitled, used, remaining };
+      const oldLeaves = oldLeavesCol >= 0 ? (parseFloat(String(matchedRow[oldLeavesCol] || '0').trim()) || 0) : 0;
+      const newLeaves = parseFloat(String(matchedRow[newLeavesCol] || '12').trim()) || 12;
+      const used = parseFloat(String(matchedRow[usedCol] || '0').trim()) || 0;
+      const calc = calculateLeaveBalanceLogic(oldLeaves, newLeaves, used);
+      const remaining = (matchedRow[remainingCol] !== undefined && String(matchedRow[remainingCol]).trim() !== '')
+        ? String(matchedRow[remainingCol]).trim()
+        : String(calc.remaining);
+
+      return { 
+        entitled: String(calc.entitled), 
+        used: String(calc.usedLeaves), 
+        remaining,
+        note: calc.note,
+        oldLeaves: String(calc.oldLeaves),
+        newLeaves: String(calc.newLeaves)
+      };
     }
   } catch (err: any) {
     console.error("fetchLeaveBalanceHelper error:", err.message);
@@ -469,11 +715,674 @@ app.get("/api/signatures", async (req, res) => {
   }
 });
 
+// ==========================================
+// WORKSHOP & AUTHENTICATION MANAGEMENT
+// ==========================================
+
+const DEFAULT_WORKSHOPS = [
+  {
+    id: "px_vanhanh",
+    name: "Phân xưởng Vận hành Thủy điện",
+    code: "PX-VH",
+    description: "Phân xưởng trực ban vận hành và điều khiển thiết bị",
+    staffData: [
+      ["Trưởng ca",        "Nguyễn Tiến Danh",  "Tạ Văn Hà",          "Nguyễn Văn Trường", "Bùi Chí Thanh",      "Hoàng Tấn Hùng"],
+      ["Trực TTĐK",        "Vũ Đức Cường",       "Lê Trí Dũng",        "Nguyễn Văn Toàn",   "Mai Xuân Sơn",       "Trần Trung Liêm"],
+      ["Trực chính điện",  "Phan Văn Hùng",      "Ngô Xuân Đoàn",      "Nguyễn Yên Nam",    "Nguyễn Trung Chính", "Lê Hướng"],
+      ["Trực phụ điện",    "Hoàng Ngọc Ân",      "Nguyễn Ngọc Hùng",   "Nguyễn Phỉ Được",   "Kiều Cao Khởi1",       "Trương Đình Thắng"],
+      ["Trực chính máy",   "Nguyễn Tấn Phước",   "Lê Văn Dân",         "Phạm Văn Toàn",     "Phan Ngọc Hùng",     "Nguyễn Khắc Học"],
+      ["Trực phụ máy",     "Phạm Văn Von",       "Thái Trần Hoàng Vũ", "Lê Văn Tích",       "Kiều Cao Khởi",          "Puih Thăn"],
+      ["TC TBA 500 kV",    "Võ Quang Minh",      "Trần Hữu Thuận",     "Lê Thành Cao",      "Bùi Ngọc Thuận",     "Phạm Hồng Thắng"],
+      ["Trực OPY",         "Ngô Xuân Vỹ",        "Trần Văn Thiên",     "Hoàng Văn Thăng",   "Trần Tiễn Quân",     "A Ran"],
+      ["Trực CNN",         "Phạm Văn Mạnh",      "Hà Văn Chăn",        "Lê Thế Đàm",        "Cù Minh Trung",      "Nguyễn Vinh Quang"],
+      ["Trưởng kíp",       "Nguyễn Lâm Tiến",    "Đỗ Văn Anh",         "Trịnh Xuân An",     "Tào Trọng Thi",      "Vũ Huy Hùng"],
+      ["Trực chính GM",    "Nguyễn Hồng Quang",  "Trần Nhật Huy",      "Võ Thành Trung",    "Phùng Ngọc Tú",      "Nguyễn Thành Nguyên"],
+      ["Trực phụ điện MR", "Nguyễn Khánh Toàn", "Lê Hoài Bảo",        "Lê Vũ Minh Trung",  "Phạm Đình Đức",      "Lê Trọng Toàn"],
+      ["Trực phụ máy MR",  "Nguyễn Quang Minh",  "Rmah Thắng",         "Phạm Thanh Tùng",   "Nguyễn Văn Trung",   "Lê Trọng Toàn1"]
+    ],
+    config: {
+      soVanBan: '123/PX-VH',
+      ngayKy: '',
+      nguoiKy: 'Nguyễn Văn Nghị',
+      chucVuNguoiKy: 'Quản đốc Phân xưởng',
+      zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
+    },
+    features: {
+      enablePhanCa: true,
+      enableDonNghiPhep: true,
+      enableDoiCa: true,
+      enableChuKySo: true,
+      enableGoogleSheets: true,
+      enableBaoComCa: true
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  },
+  {
+    id: "px_suachua",
+    name: "Phân xưởng Sửa chữa Cơ điện",
+    code: "PX-SC",
+    description: "Phân xưởng chịu trách nhiệm bảo trì, bảo dưỡng và sửa chữa thiết bị",
+    staffData: [
+      ["Trưởng ca Sửa chữa", "Lê Văn Tùng", "Trần Đình Bảo", "Phạm Văn Nam"],
+      ["Kỹ thuật viên Điện", "Nguyễn Hoàng Việt", "Đỗ Văn Toàn", "Vũ Minh Tân"],
+      ["Kỹ thuật viên Cơ", "Nguyễn Khắc Tuấn", "Phan Thanh Hải", "Lê Hữu Nghĩa"]
+    ],
+    config: {
+      soVanBan: '45/PX-SC',
+      ngayKy: '',
+      nguoiKy: 'Trần Văn Tuyên',
+      chucVuNguoiKy: 'Quản đốc PX Sửa chữa',
+      zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
+    },
+    features: {
+      enablePhanCa: true,
+      enableDonNghiPhep: true,
+      enableDoiCa: true,
+      enableChuKySo: true,
+      enableGoogleSheets: false,
+      enableBaoComCa: true
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }
+];
+
+const DEFAULT_ACCOUNTS = [
+  {
+    id: "acc_admin",
+    username: "admin",
+    password: "admin123",
+    fullName: "Quản trị viên Hệ thống (Super Admin)",
+    role: "super_admin",
+    workshopId: "all",
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: "acc_admin_vh",
+    username: "admin_vanhanh",
+    password: "123456",
+    fullName: "Admin Phân xưởng Vận hành",
+    role: "workshop_admin",
+    workshopId: "px_vanhanh",
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: "acc_user_vh",
+    username: "user_vanhanh",
+    password: "123456",
+    fullName: "Tài khoản PX Vận hành",
+    role: "workshop_user",
+    workshopId: "px_vanhanh",
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: "acc_admin_sc",
+    username: "admin_suachua",
+    password: "123456",
+    fullName: "Admin Phân xưởng Sửa chữa",
+    role: "workshop_admin",
+    workshopId: "px_suachua",
+    createdAt: new Date().toISOString()
+  },
+  {
+    id: "acc_user_sc",
+    username: "user_suachua",
+    password: "123456",
+    fullName: "Tài khoản PX Sửa chữa",
+    role: "workshop_user",
+    workshopId: "px_suachua",
+    createdAt: new Date().toISOString()
+  }
+];
+
+const LOCAL_STORE_PATH = path.join(process.cwd(), "local_store.json");
+
+let localStore: {
+  workshops: any[];
+  accounts: any[];
+  appSettings: any;
+  pendingLeaves: any[];
+  signatures: Record<string, any>;
+} = {
+  workshops: [...DEFAULT_WORKSHOPS],
+  accounts: [...DEFAULT_ACCOUNTS],
+  appSettings: null,
+  pendingLeaves: [],
+  signatures: {}
+};
+
+try {
+  if (fs.existsSync(LOCAL_STORE_PATH)) {
+    const fileData = JSON.parse(fs.readFileSync(LOCAL_STORE_PATH, "utf-8"));
+    if (fileData.workshops && Array.isArray(fileData.workshops)) localStore.workshops = fileData.workshops;
+    if (fileData.accounts && Array.isArray(fileData.accounts)) localStore.accounts = fileData.accounts;
+    if (fileData.appSettings) localStore.appSettings = fileData.appSettings;
+    if (fileData.pendingLeaves && Array.isArray(fileData.pendingLeaves)) localStore.pendingLeaves = fileData.pendingLeaves;
+    if (fileData.signatures) localStore.signatures = fileData.signatures;
+  }
+} catch (err) {
+  console.warn("Notice: Reading local_store.json fallback notice:", err);
+}
+
+function persistLocalStore() {
+  try {
+    fs.writeFileSync(LOCAL_STORE_PATH, JSON.stringify(localStore, null, 2), "utf-8");
+  } catch (err) {
+    // Ignore if environment is read-only
+  }
+}
+
+let hasSeededWorkshops = false;
+let hasSeededAccounts = false;
+
+async function ensureSeedData() {
+  try {
+    const db = getFirestoreInstance();
+    const seedDoc = await db.collection("system").doc("seed_status").get().catch(() => null);
+    if (seedDoc && seedDoc.exists) {
+      hasSeededWorkshops = true;
+      hasSeededAccounts = true;
+      return;
+    }
+    
+    // Seed default workshops only if workshops collection is empty
+    if (!hasSeededWorkshops) {
+      const wsSnap = await db.collection("workshops").limit(1).get();
+      if (wsSnap.empty) {
+        for (const ws of DEFAULT_WORKSHOPS) {
+          await db.collection("workshops").doc(ws.id).set(serializeForFirestore(ws));
+        }
+      }
+      hasSeededWorkshops = true;
+    }
+
+    // Seed default accounts only if accounts collection is empty
+    if (!hasSeededAccounts) {
+      const accSnap = await db.collection("accounts").limit(1).get();
+      if (accSnap.empty) {
+        for (const acc of DEFAULT_ACCOUNTS) {
+          await db.collection("accounts").doc(acc.id).set(acc);
+        }
+      }
+      hasSeededAccounts = true;
+    }
+
+    await db.collection("system").doc("seed_status").set({ seededAt: new Date().toISOString() }).catch(() => null);
+  } catch (e: any) {
+    console.warn("Firestore seed data check notice (using local fallback store):", e.message || e);
+  }
+}
+
+ensureSeedData().catch((err) => console.warn("Seed data notice:", err?.message || err));
+
+// Track failed login attempts and temporary account locks (5 fails -> 15 min lock)
+const failedLoginAttempts: Record<string, { count: number; lockUntil: number }> = {};
+
+app.post("/api/auth/login", express.json(), async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: "Tên đăng nhập và mật khẩu là bắt buộc." });
+  }
+
+  const cleanUsername = String(username).trim().toLowerCase();
+  const cleanPassword = String(password).trim();
+  const now = Date.now();
+
+  // Check if account is locked out
+  const userLock = failedLoginAttempts[cleanUsername];
+  if (userLock && userLock.lockUntil > now) {
+    const remainingMs = userLock.lockUntil - now;
+    const remainingMins = Math.ceil(remainingMs / 60000);
+    return res.status(429).json({
+      error: `Tài khoản tạm thời bị khóa do nhập sai mật khẩu 5 lần liên tiếp. Vui lòng thử lại sau ${remainingMins} phút.`
+    });
+  }
+
+  await ensureSeedData();
+
+  let userDoc: any = null;
+
+  try {
+    const db = getFirestoreInstance();
+    const snapshot = await db.collection("accounts").where("username", "==", cleanUsername).get();
+    if (!snapshot.empty) {
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.password === cleanPassword) {
+          userDoc = { id: doc.id, ...data };
+        }
+      });
+    }
+  } catch (dbErr: any) {
+    console.warn("Firestore accounts search notice:", dbErr.message);
+  }
+
+  // Fallback to localStore / DEFAULT_ACCOUNTS
+  if (!userDoc) {
+    const localAcc = localStore.accounts.find(
+      acc => acc.username.toLowerCase() === cleanUsername && acc.password === cleanPassword
+    );
+    if (localAcc) {
+      userDoc = { ...localAcc };
+    } else {
+      const defaultAcc = DEFAULT_ACCOUNTS.find(
+        acc => acc.username.toLowerCase() === cleanUsername && acc.password === cleanPassword
+      );
+      if (defaultAcc) {
+        userDoc = { ...defaultAcc };
+      }
+    }
+  }
+
+  if (!userDoc) {
+    const currentAttempt = failedLoginAttempts[cleanUsername] || { count: 0, lockUntil: 0 };
+    if (currentAttempt.lockUntil && currentAttempt.lockUntil <= now) {
+      currentAttempt.count = 0;
+      currentAttempt.lockUntil = 0;
+    }
+
+    currentAttempt.count += 1;
+
+    if (currentAttempt.count >= 5) {
+      currentAttempt.lockUntil = now + 15 * 60 * 1000; // 15 minutes lockout
+      failedLoginAttempts[cleanUsername] = currentAttempt;
+      return res.status(429).json({
+        error: "Bạn đã nhập sai mật khẩu 5 lần liên tiếp. Tài khoản tạm thời bị khóa trong 15 phút."
+      });
+    }
+
+    failedLoginAttempts[cleanUsername] = currentAttempt;
+    const remaining = 5 - currentAttempt.count;
+    return res.status(401).json({
+      error: `Tên đăng nhập hoặc mật khẩu không chính xác (còn ${remaining} lần thử trước khi khóa 15 phút).`
+    });
+  }
+
+  // Successful login -> clear failed attempts
+  delete failedLoginAttempts[cleanUsername];
+
+  const { password: _, ...userWithoutPassword } = userDoc;
+
+  const isHttps = req.secure || req.headers["x-forwarded-proto"] === "https";
+  res.cookie("auth_user", JSON.stringify(userWithoutPassword), {
+    httpOnly: true,
+    secure: isHttps,
+    sameSite: isHttps ? "none" : "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  });
+
+  res.json({
+    success: true,
+    user: userWithoutPassword
+  });
+});
+
+app.get("/api/auth/me", async (req, res) => {
+  let cookieUser = req.cookies.auth_user;
+
+  if (!cookieUser && req.headers["x-auth-user"]) {
+    try {
+      const rawHeader = req.headers["x-auth-user"] as string;
+      cookieUser = rawHeader.startsWith("%") ? decodeURIComponent(rawHeader) : rawHeader;
+    } catch (e) {
+      cookieUser = req.headers["x-auth-user"];
+    }
+  }
+
+  if (!cookieUser) {
+    return res.json({ authenticated: false, user: null });
+  }
+  try {
+    const user = typeof cookieUser === 'string' ? JSON.parse(cookieUser) : cookieUser;
+    res.json({ authenticated: true, user });
+  } catch (e) {
+    res.json({ authenticated: false, user: null });
+  }
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  res.clearCookie("auth_user");
+  res.json({ success: true });
+});
+
+app.post("/api/auth/change-password", express.json(), async (req, res) => {
+  let cookieUser = req.cookies.auth_user;
+  if (!cookieUser && req.headers["x-auth-user"]) {
+    try {
+      const rawHeader = req.headers["x-auth-user"] as string;
+      cookieUser = rawHeader.startsWith("%") ? decodeURIComponent(rawHeader) : rawHeader;
+    } catch (e) {
+      cookieUser = req.headers["x-auth-user"];
+    }
+  }
+
+  if (!cookieUser) {
+    return res.status(401).json({ error: "Bạn chưa đăng nhập." });
+  }
+
+  let currentUser: any = null;
+  try {
+    currentUser = typeof cookieUser === 'string' ? JSON.parse(cookieUser) : cookieUser;
+  } catch (e) {
+    return res.status(401).json({ error: "Phiên đăng nhập không hợp lệ." });
+  }
+
+  const { oldPassword, newPassword } = req.body;
+  if (!oldPassword || !newPassword) {
+    return res.status(400).json({ error: "Vui lòng nhập đầy đủ mật khẩu cũ và mật khẩu mới." });
+  }
+
+  const cleanOld = String(oldPassword).trim();
+  const cleanNew = String(newPassword).trim();
+
+  if (cleanNew.length < 4) {
+    return res.status(400).json({ error: "Mật khẩu mới phải có ít nhất 4 ký tự." });
+  }
+
+  let userAccountDoc: any = null;
+  const usernameClean = currentUser.username.toLowerCase();
+
+  try {
+    const db = getFirestoreInstance();
+    const snapshot = await db.collection("accounts").where("username", "==", usernameClean).get();
+    if (!snapshot.empty) {
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.password === cleanOld) {
+          userAccountDoc = { id: doc.id, ...data };
+        }
+      });
+    }
+  } catch (e: any) {
+    console.warn("Firestore find account notice:", e?.message);
+  }
+
+  if (!userAccountDoc) {
+    const localAcc = localStore.accounts.find(
+      acc => acc.username.toLowerCase() === usernameClean && acc.password === cleanOld
+    );
+    if (localAcc) {
+      userAccountDoc = { ...localAcc };
+    } else {
+      const defaultAcc = DEFAULT_ACCOUNTS.find(
+        acc => acc.username.toLowerCase() === usernameClean && acc.password === cleanOld
+      );
+      if (defaultAcc) {
+        userAccountDoc = { ...defaultAcc };
+      }
+    }
+  }
+
+  if (!userAccountDoc) {
+    return res.status(400).json({ error: "Mật khẩu cũ không chính xác." });
+  }
+
+  userAccountDoc.password = cleanNew;
+  userAccountDoc.updatedAt = new Date().toISOString();
+
+  const accIdx = localStore.accounts.findIndex(a => a.username.toLowerCase() === usernameClean || a.id === userAccountDoc.id);
+  if (accIdx >= 0) {
+    localStore.accounts[accIdx].password = cleanNew;
+  } else {
+    localStore.accounts.push(userAccountDoc);
+  }
+  persistLocalStore();
+
+  try {
+    const db = getFirestoreInstance();
+    await db.collection("accounts").doc(userAccountDoc.id).set({
+      password: cleanNew,
+      updatedAt: userAccountDoc.updatedAt
+    }, { merge: true });
+  } catch (e: any) {
+    console.warn("Firestore password update notice:", e.message);
+  }
+
+  res.json({ success: true, message: "Đổi mật khẩu thành công!" });
+});
+
+app.get("/api/workshops", async (req, res) => {
+  try {
+    const db = getFirestoreInstance();
+    await ensureSeedData();
+    
+    const snapshot = await db.collection("workshops").get();
+    const workshops: any[] = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      const deserialized = deserializeFromFirestore(data);
+      workshops.push({
+        id: doc.id,
+        ...deserialized
+      });
+    });
+    localStore.workshops = workshops;
+    persistLocalStore();
+    return res.json(workshops);
+  } catch (e: any) {
+    console.warn("Firestore get workshops notice (using localStore fallback):", e.message);
+  }
+  res.json(localStore.workshops || []);
+});
+
+app.post("/api/workshops", express.json({ limit: '10mb' }), async (req, res) => {
+  const { id, name, code, description, staffData, config, features } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: "Tên phân xưởng là bắt buộc" });
+  }
+
+  const wsId = id || ("px_" + Date.now());
+  const now = new Date().toISOString();
+
+  const workshopDoc = {
+    id: wsId,
+    name: name.trim(),
+    code: (code || name.substring(0, 5).toUpperCase()).trim(),
+    description: description || "",
+    staffData: staffData || [],
+    config: config || {
+      soVanBan: '123/PX',
+      ngayKy: '',
+      nguoiKy: 'Lãnh đạo Phân xưởng',
+      chucVuNguoiKy: 'Quản đốc Phân xưởng',
+      zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
+    },
+    features: features || {
+      enablePhanCa: true,
+      enableDonNghiPhep: true,
+      enableDoiCa: true,
+      enableChuKySo: true,
+      enableGoogleSheets: true,
+      enableBaoComCa: true
+    },
+    updatedAt: now,
+    createdAt: req.body.createdAt || now
+  };
+
+  const wsIdx = localStore.workshops.findIndex(w => w.id === wsId);
+  if (wsIdx >= 0) {
+    localStore.workshops[wsIdx] = { ...localStore.workshops[wsIdx], ...workshopDoc };
+  } else {
+    localStore.workshops.push(workshopDoc);
+  }
+  persistLocalStore();
+
+  try {
+    const db = getFirestoreInstance();
+    const docToSave = serializeForFirestore(workshopDoc);
+    await db.collection("workshops").doc(wsId).set(docToSave, { merge: true });
+  } catch (e: any) {
+    console.warn("Firestore save workshop notice (saved in localStore fallback):", e.message);
+  }
+
+  res.json({
+    success: true,
+    workshop: workshopDoc
+  });
+});
+
+app.delete("/api/workshops/:id", async (req, res) => {
+  const { id } = req.params;
+  localStore.workshops = localStore.workshops.filter(w => w.id !== id);
+  localStore.accounts = localStore.accounts.filter(a => a.workshopId !== id);
+  persistLocalStore();
+
+  try {
+    const db = getFirestoreInstance();
+    await db.collection("workshops").doc(id).delete();
+
+    const accSnap = await db.collection("accounts").where("workshopId", "==", id).get();
+    if (!accSnap.empty) {
+      const batch = db.batch();
+      accSnap.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+    }
+  } catch (e: any) {
+    console.warn("Firestore delete workshop notice:", e.message);
+  }
+  res.json({ success: true });
+});
+
+app.get("/api/accounts", async (req, res) => {
+  try {
+    const db = getFirestoreInstance();
+    await ensureSeedData();
+    
+    const snapshot = await db.collection("accounts").get();
+    const accounts: any[] = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      accounts.push({
+        id: doc.id,
+        username: data.username,
+        fullName: data.fullName,
+        role: data.role,
+        workshopId: data.workshopId,
+        createdAt: data.createdAt
+      });
+    });
+    localStore.accounts = accounts;
+    persistLocalStore();
+    return res.json(accounts);
+  } catch (e: any) {
+    console.warn("Firestore get accounts notice (using localStore fallback):", e.message);
+  }
+  res.json(localStore.accounts || []);
+});
+
+app.post("/api/accounts", express.json(), async (req, res) => {
+  const { id, username, password, fullName, role, workshopId } = req.body;
+  if (!username || !fullName || !role || !workshopId) {
+    return res.status(400).json({ error: "Vui lòng nhập đủ các thông tin bắt buộc." });
+  }
+
+  const cleanUsername = username.trim().toLowerCase();
+  const accId = id || ("acc_" + Date.now());
+  const now = new Date().toISOString();
+
+  const isDuplicateLocal = localStore.accounts.some(a => a.username.toLowerCase() === cleanUsername && a.id !== accId);
+  if (isDuplicateLocal) {
+    return res.status(400).json({ error: "Tên đăng nhập đã được sử dụng." });
+  }
+
+  const existingLocal = localStore.accounts.find(a => a.id === accId);
+  const accountData: any = {
+    id: accId,
+    username: cleanUsername,
+    fullName: fullName.trim(),
+    role,
+    workshopId,
+    updatedAt: now,
+    createdAt: existingLocal?.createdAt || now
+  };
+
+  if (password && password.trim()) {
+    accountData.password = password.trim();
+  } else if (existingLocal?.password) {
+    accountData.password = existingLocal.password;
+  } else {
+    accountData.password = "123456";
+  }
+
+  const accIdx = localStore.accounts.findIndex(a => a.id === accId);
+  if (accIdx >= 0) {
+    localStore.accounts[accIdx] = accountData;
+  } else {
+    localStore.accounts.push(accountData);
+  }
+  persistLocalStore();
+
+  try {
+    const db = getFirestoreInstance();
+    const docRef = db.collection("accounts").doc(accId);
+    await docRef.set(accountData, { merge: true });
+  } catch (e: any) {
+    console.warn("Firestore save account notice (saved in localStore fallback):", e.message);
+  }
+
+  const { password: _, ...accountPublic } = accountData;
+  res.json({
+    success: true,
+    account: accountPublic
+  });
+});
+
+app.delete("/api/accounts/:id", async (req, res) => {
+  const { id } = req.params;
+  localStore.accounts = localStore.accounts.filter(a => a.id !== id && a.username.toLowerCase() !== id.toLowerCase());
+  persistLocalStore();
+
+  try {
+    const db = getFirestoreInstance();
+    await db.collection("accounts").doc(id).delete();
+
+    const querySnap = await db.collection("accounts").where("username", "==", id.toLowerCase()).get();
+    if (!querySnap.empty) {
+      const batch = db.batch();
+      querySnap.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+    }
+  } catch (e: any) {
+    console.warn("Firestore delete account notice:", e.message);
+  }
+  res.json({ success: true });
+});
+
+app.get("/api/signatures", async (req, res) => {
+  try {
+    const db = getFirestoreInstance();
+    const snapshot = await db.collection("signatures").get();
+    const result: Record<string, string> = {};
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      if (data.name && data.data) {
+        result[data.name] = data.data;
+      }
+    });
+    if (Object.keys(result).length > 0) {
+      localStore.signatures = result;
+      persistLocalStore();
+      return res.json(result);
+    }
+  } catch (e: any) {
+    console.warn("Firestore signatures read notice:", e.message);
+  }
+  res.json(localStore.signatures || {});
+});
+
 app.post("/api/signatures", express.json({ limit: '10mb' }), async (req, res) => {
   const { name, data } = req.body;
   if (!name || !data) {
     return res.status(400).json({ error: "Name and data are required" });
   }
+  localStore.signatures[name] = data;
+  persistLocalStore();
+
   try {
     const db = getFirestoreInstance();
     await db.collection("signatures").doc(name).set({
@@ -481,11 +1390,35 @@ app.post("/api/signatures", express.json({ limit: '10mb' }), async (req, res) =>
       data,
       updatedAt: new Date().toISOString()
     });
-    res.json({ success: true });
   } catch (e: any) {
-    console.error("Error saving signature:", e);
-    res.status(500).json({ error: e.message });
+    console.warn("Firestore signature save notice:", e.message);
   }
+  res.json({ success: true });
+});
+
+app.post("/api/signatures/batch", express.json({ limit: '50mb' }), async (req, res) => {
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: "Items array is required" });
+  }
+
+  for (const item of items) {
+    if (item.name && item.data) {
+      localStore.signatures[item.name] = item.data;
+      try {
+        const db = getFirestoreInstance();
+        await db.collection("signatures").doc(item.name).set({
+          name: item.name,
+          data: item.data,
+          updatedAt: new Date().toISOString()
+        });
+      } catch (e: any) {
+        console.warn("Firestore batch signature save notice:", e.message);
+      }
+    }
+  }
+  persistLocalStore();
+  res.json({ success: true, count: items.length });
 });
 
 // App Settings Endpoints (Staff List & Config)
@@ -496,21 +1429,13 @@ app.get("/api/app-settings", async (req, res) => {
     if (doc.exists) {
       const data = doc.data();
       if (data) {
-        if (typeof data.staffData === 'string') {
-          try {
-            data.staffData = JSON.parse(data.staffData);
-          } catch (e) {
-            console.error("Failed to parse staffData JSON", e);
-            data.staffData = []; // Fallback to empty array on parse error
-          }
-        }
-        // Ensure it's an array
-        if (!Array.isArray(data.staffData)) {
-          data.staffData = [];
+        const deserialized = deserializeFromFirestore(data);
+        if (!Array.isArray(deserialized.staffData)) {
+          deserialized.staffData = [];
         } else {
           // Perform server-side migration for 'Trực phụ cơ MR' -> 'Trực phụ máy MR'
           let hasMigration = false;
-          const migrated = data.staffData.map((row: any) => {
+          const migrated = deserialized.staffData.map((row: any) => {
             if (Array.isArray(row) && row[0] === 'Trực phụ cơ MR') {
               hasMigration = true;
               return ['Trực phụ máy MR', ...row.slice(1)];
@@ -518,66 +1443,73 @@ app.get("/api/app-settings", async (req, res) => {
             return row;
           });
           if (hasMigration) {
-            data.staffData = migrated;
+            deserialized.staffData = migrated;
             try {
-              await db.collection("config").doc("app_settings").set({
-                staffData: JSON.stringify(migrated)
-              }, { merge: true });
-              console.log("Migrated 'Trực phụ cơ MR' to 'Trực phụ máy MR' in Firestore settings.");
-            } catch (saveErr) {
-              console.error("Failed to save migrated staffData in Firestore", saveErr);
-            }
+              await db.collection("config").doc("app_settings").set(serializeForFirestore({
+                staffData: migrated
+              }), { merge: true });
+            } catch (saveErr) {}
           }
         }
 
         // Migrate Zalo Webhook URL
         if (
-          data.config && 
-          data.config.zaloWebhookUrl && 
+          deserialized.config && 
+          deserialized.config.zaloWebhookUrl && 
           (
-            data.config.zaloWebhookUrl.includes("cookies-blue-pen-bikini.trycloudflare.com") || 
-            data.config.zaloWebhookUrl.includes("specialists-intro-exterior-advocacy.trycloudflare.com") ||
-            data.config.zaloWebhookUrl.includes("committed-intellectual-lunch-clone.trycloudflare.com")
+            deserialized.config.zaloWebhookUrl.includes("cookies-blue-pen-bikini.trycloudflare.com") || 
+            deserialized.config.zaloWebhookUrl.includes("specialists-intro-exterior-advocacy.trycloudflare.com") ||
+            deserialized.config.zaloWebhookUrl.includes("committed-intellectual-lunch-clone.trycloudflare.com")
           )
         ) {
-          data.config.zaloWebhookUrl = "https://vhialy.dpdns.org/webhook/notify";
+          deserialized.config.zaloWebhookUrl = "https://vhialy.dpdns.org/webhook/notify";
           try {
-            await db.collection("config").doc("app_settings").set({
-              config: data.config
-            }, { merge: true });
-            console.log("Migrated 'zaloWebhookUrl' to 'vhialy.dpdns.org' in Firestore settings.");
-          } catch (saveErr) {
-            console.error("Failed to save migrated zaloWebhookUrl in Firestore", saveErr);
-          }
+            await db.collection("config").doc("app_settings").set(serializeForFirestore({
+              config: deserialized.config
+            }), { merge: true });
+          } catch (saveErr) {}
         }
+
+        localStore.appSettings = deserialized;
+        persistLocalStore();
+        return res.json(deserialized);
       }
-      res.json(data);
-    } else {
-      res.json({ staffData: null, config: null });
     }
   } catch (e: any) {
-    console.error("Error fetching app settings:", e);
-    res.status(500).json({ error: e.message });
+    console.warn("Firestore get app-settings notice (using localStore fallback):", e.message);
   }
+
+  if (localStore.appSettings) {
+    return res.json(localStore.appSettings);
+  }
+
+  const defaultSettings = {
+    staffData: DEFAULT_WORKSHOPS[0]?.staffData || [],
+    config: DEFAULT_WORKSHOPS[0]?.config || {}
+  };
+  res.json(defaultSettings);
 });
 
 app.post("/api/app-settings", express.json({ limit: '5mb' }), async (req, res) => {
   const { staffData, config } = req.body;
+
+  localStore.appSettings = { staffData, config };
+  persistLocalStore();
+
   try {
     const db = getFirestoreInstance();
-    // Firestore does not support nested arrays, so we stringify staffData
-    const serializedStaffData = JSON.stringify(staffData);
-    
-    await db.collection("config").doc("app_settings").set({
-      staffData: serializedStaffData,
+    const docToSave = serializeForFirestore({
+      staffData,
       config,
       updatedAt: new Date().toISOString()
-    }, { merge: true });
-    res.json({ success: true });
+    });
+    
+    await db.collection("config").doc("app_settings").set(docToSave, { merge: true });
   } catch (e: any) {
-    console.error("Error saving app settings:", e);
-    res.status(500).json({ error: e.message });
+    console.warn("Firestore save app-settings notice (saved in localStore fallback):", e.message);
   }
+
+  res.json({ success: true });
 });
 
 app.get("/api/debug/env", (req, res) => {
@@ -691,13 +1623,204 @@ app.get("/api/auth/status", async (req, res) => {
   });
 });
 
-async function ensureLeaveSheetExists(sheets: any, spreadsheetId: string) {
+const DEFAULT_LEAVE_SPREADSHEET_ID = '1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ';
+const LEAVE_SPREADSHEET_ID = DEFAULT_LEAVE_SPREADSHEET_ID;
+
+function extractSpreadsheetId(input?: string): string {
+  if (!input || typeof input !== 'string' || !input.trim()) {
+    return DEFAULT_LEAVE_SPREADSHEET_ID;
+  }
+  const trimmed = input.trim();
+  const match = trimmed.match(/\/d\/([a-zA-Z0-9-_]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  if (/^[a-zA-Z0-9-_]{20,}$/.test(trimmed)) {
+    return trimmed;
+  }
+  return DEFAULT_LEAVE_SPREADSHEET_ID;
+}
+
+function resolveSpreadsheetId(req?: any): string {
+  if (!req) return DEFAULT_LEAVE_SPREADSHEET_ID;
+  const candidate = 
+    req.body?.spreadsheetId ||
+    req.body?.googleSheetUrl ||
+    req.body?.leaveSpreadsheetUrl ||
+    req.query?.spreadsheetId ||
+    req.query?.googleSheetUrl ||
+    req.query?.leaveSpreadsheetUrl;
+
+  if (candidate && typeof candidate === 'string' && candidate.trim()) {
+    return extractSpreadsheetId(candidate);
+  }
+
+  if (localStore?.appSettings?.config?.googleSheetUrl) {
+    return extractSpreadsheetId(localStore.appSettings.config.googleSheetUrl);
+  }
+  if (localStore?.appSettings?.config?.leaveSpreadsheetUrl) {
+    return extractSpreadsheetId(localStore.appSettings.config.leaveSpreadsheetUrl);
+  }
+
+  return DEFAULT_LEAVE_SPREADSHEET_ID;
+}
+
+async function updateAnnualLeaveUsedDays(sheets: any, spreadsheetId: string) {
   try {
     const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-    const sheetNames = spreadsheet.data.sheets?.map((s: any) => s.properties?.title) || [];
-    
-    if (!sheetNames.includes("DANH_SACH_NGHI")) {
-      // Create sheet
+    const sheetObjects = spreadsheet.data.sheets || [];
+    const sheetTitles = sheetObjects.map((s: any) => s.properties?.title || "");
+
+    const annualLeaveSheetName = sheetTitles.find(t => t.toLowerCase().trim() === "số ngày phép") || "Số ngày phép";
+
+    // Find all workshop leave sheets
+    const leaveSheets = sheetTitles.filter(t => t.toLowerCase().startsWith("danh_sach_nghi"));
+
+    const usedDaysMap = new Map<string, number>();
+
+    for (const sheetName of leaveSheets) {
+      try {
+        const res = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `'${sheetName}'!A1:M1000`
+        });
+        const allRows = res.data.values || [];
+        if (allRows.length <= 1) continue;
+
+        const headerRow = allRows[0] || [];
+        let nameCol = 1;
+        let kipCol = 4;
+        let startCol = 5;
+        let endCol = 6;
+        let numDaysCol = -1;
+        let statusCol = 10;
+
+        for (let c = 0; c < headerRow.length; c++) {
+          const hText = removeVietnameseAccents(String(headerRow[c] || '')).toLowerCase().trim();
+          if (hText.includes("ho va ten") || hText.includes("ho ten") || hText === "ten" || hText.includes("nhan su")) {
+            nameCol = c;
+          } else if (hText.includes("kip") || hText === "kip") {
+            kipCol = c;
+          } else if (hText.includes("so ca") || hText.includes("so ngay nghi") || hText.includes("so ca nghi") || hText === "so ngay") {
+            numDaysCol = c;
+          } else if (hText.includes("tu ngay") || hText.includes("ngay bat dau") || hText === "tu") {
+            startCol = c;
+          } else if (hText.includes("den ngay") || hText.includes("ngay ket thuc") || hText === "den") {
+            endCol = c;
+          } else if (hText.includes("trang thai") || hText.includes("tinh trang")) {
+            statusCol = c;
+          }
+        }
+
+        const dataRows = allRows.slice(1);
+        for (const r of dataRows) {
+          if (!r || r.length <= nameCol) continue;
+          const personName = (r[nameCol] || '').trim();
+          if (!personName) continue;
+
+          const status = statusCol >= 0 && statusCol < r.length ? (r[statusCol] || '').trim().toLowerCase() : '';
+          if (status === 'đã hủy' || status === 'từ chối' || status === 'da huy' || status === 'tu choi') continue;
+
+          let days = 1;
+          if (numDaysCol >= 0 && numDaysCol < r.length && r[numDaysCol] && !isNaN(parseFloat(r[numDaysCol]))) {
+            days = Math.max(0, parseFloat(r[numDaysCol]));
+          } else {
+            const startDate = startCol >= 0 && startCol < r.length ? r[startCol] : '';
+            const endDate = endCol >= 0 && endCol < r.length ? r[endCol] : startDate;
+            const kipVal = kipCol >= 0 && kipCol < r.length ? r[kipCol] : '';
+            days = calculateLeaveDays(startDate, endDate, kipVal);
+          }
+
+          const currentTotal = usedDaysMap.get(personName.toLowerCase()) || 0;
+          usedDaysMap.set(personName.toLowerCase(), currentTotal + days);
+        }
+      } catch (e) {}
+    }
+
+    // Now read sheet "Số ngày phép"
+    const annualRes = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${annualLeaveSheetName}'!A1:I500`
+    });
+    const annualRows = annualRes.data.values || [];
+    if (annualRows.length <= 1) return;
+
+    const updates: any[] = [];
+
+    for (let i = 1; i < annualRows.length; i++) {
+      const row = annualRows[i];
+      if (!row || !row[1]) continue;
+      const personName = String(row[1]).trim();
+      const normName = personName.toLowerCase();
+      const normAccents = removeVietnameseAccents(normName);
+
+      // Find matching used days
+      let usedDays = usedDaysMap.get(normName);
+      if (usedDays === undefined) {
+        for (const [key, val] of usedDaysMap.entries()) {
+          if (removeVietnameseAccents(key) === normAccents) {
+            usedDays = val;
+            break;
+          }
+        }
+      }
+      if (usedDays === undefined) usedDays = 0;
+
+      const rowIndex = i + 1; // 1-indexed row in Sheets
+      const oldLeaves = parseFloat(String(row[4] || '0')) || 0;
+      const newLeaves = parseFloat(String(row[5] || '12')) || 12;
+
+      const calc = calculateLeaveBalanceLogic(oldLeaves, newLeaves, usedDays);
+
+      const formulaStr = `=IF(MONTH(TODAY())<=3; MAX(0; E${rowIndex} + F${rowIndex} - G${rowIndex}); MAX(0; F${rowIndex} - MAX(0; G${rowIndex} - E${rowIndex})))`;
+      
+      updates.push({
+        range: `'${annualLeaveSheetName}'!G${rowIndex}:I${rowIndex}`,
+        values: [[
+          usedDays,
+          formulaStr,
+          calc.note
+        ]]
+      });
+    }
+
+    if (updates.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          valueInputOption: "USER_ENTERED",
+          data: updates
+        }
+      });
+      console.log(`Updated used leave days for ${updates.length} staff members in '${annualLeaveSheetName}'.`);
+    }
+  } catch (err: any) {
+    console.error("updateAnnualLeaveUsedDays error:", err.message);
+  }
+}
+
+async function ensureAnnualLeaveSheetExists(sheets: any, spreadsheetId: string, staffData?: string[][]): Promise<string> {
+  const targetSheetName = "Số ngày phép";
+  const headerValues = [
+    "STT", 
+    "Họ và tên", 
+    "Chức danh", 
+    "Kíp", 
+    "Phép năm cũ còn lại", 
+    "Phép năm mới được hưởng", 
+    "Phép đã nghỉ năm nay", 
+    "Phép còn lại hiện tại", 
+    "Ghi chú"
+  ];
+
+  try {
+    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+    const sheetObjects = spreadsheet.data.sheets || [];
+    const sheetNames = sheetObjects.map((s: any) => s.properties?.title || "");
+
+    const existingName = sheetNames.find(n => n.toLowerCase().trim() === "số ngày phép");
+
+    if (!existingName) {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId,
         requestBody: {
@@ -705,92 +1828,279 @@ async function ensureLeaveSheetExists(sheets: any, spreadsheetId: string) {
             {
               addSheet: {
                 properties: {
-                  title: "DANH_SACH_NGHI"
+                  title: targetSheetName
                 }
               }
             }
           ]
         }
       });
-      // Append header
+
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: "DANH_SACH_NGHI!A1:L1",
-        valueInputOption: "RAW",
+        range: `'${targetSheetName}'!A1:I1`,
+        valueInputOption: "USER_ENTERED",
         requestBody: {
-          values: [[
-            "Mã đơn", 
-            "Họ và tên", 
-            "Năm sinh", 
-            "Chức danh", 
-            "Kíp", 
-            "Từ ngày", 
-            "Đến ngày", 
-            "Lý do", 
-            "Điện thoại", 
-            "Địa điểm", 
-            "Trạng thái", 
-            "Ngày tạo"
-          ]]
+          values: [headerValues]
         }
       });
-      console.log("Created 'DANH_SACH_NGHI' sheet and headers.");
+      console.log(`Created sheet '${targetSheetName}' and written 9-column headers.`);
+    } else {
+      // Ensure header has all 9 columns
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `'${existingName}'!A1:I1`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [headerValues]
+        }
+      });
     }
+
+    const actualSheetName = existingName || targetSheetName;
+
+    if (staffData && Array.isArray(staffData) && staffData.length > 0) {
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `'${actualSheetName}'!A1:I500`
+      });
+      const rows = response.data.values || [];
+      const existingNames = new Set<string>();
+      
+      for (let i = 1; i < rows.length; i++) {
+        if (rows[i] && rows[i][1]) {
+          existingNames.add(rows[i][1].toString().trim().toLowerCase());
+        }
+      }
+
+      const rowsToAppend: any[][] = [];
+      let currentStt = rows.length > 1 ? rows.length : 1;
+
+      for (const row of staffData) {
+        if (!Array.isArray(row) || row.length === 0) continue;
+        const title = (row[0] || '').trim();
+        for (let k = 1; k <= 5; k++) {
+          const personName = row[k] ? row[k].trim() : '';
+          if (personName && !existingNames.has(personName.toLowerCase())) {
+            existingNames.add(personName.toLowerCase());
+            const rowIndex = currentStt + 1; // Row index in Google Sheets
+            const formulaStr = `=IF(MONTH(TODAY())<=3; MAX(0; E${rowIndex} + F${rowIndex} - G${rowIndex}); MAX(0; F${rowIndex} - MAX(0; G${rowIndex} - E${rowIndex})))`;
+            rowsToAppend.push([
+              currentStt++,
+              personName,
+              title,
+              `Kíp ${k}`,
+              0,  // Phép năm cũ còn lại
+              12, // Phép năm mới được hưởng
+              0,  // Phép đã nghỉ năm nay
+              formulaStr, // Phép còn lại hiện tại
+              "Hạn phép năm cũ: hết ngày 31/03"
+            ]);
+          }
+        }
+      }
+
+      if (rowsToAppend.length > 0) {
+        await sheets.spreadsheets.values.append({
+          spreadsheetId,
+          range: `'${actualSheetName}'!A:I`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: rowsToAppend
+          }
+        });
+        console.log(`Appended ${rowsToAppend.length} staff members to '${actualSheetName}'.`);
+      }
+    }
+
+    // Auto update used leave days from all leave requests
+    updateAnnualLeaveUsedDays(sheets, spreadsheetId).catch(() => {});
+
+    return actualSheetName;
   } catch (e: any) {
-    console.error("Error securing leave sheet:", e.message);
-    throw e;
+    console.error(`Error in ensureAnnualLeaveSheetExists:`, e.message);
+    return targetSheetName;
   }
+}
+
+function formatWorkshopSheetTitle(workshopId?: string): string {
+  if (!workshopId || workshopId === 'all') {
+    return "DANH_SACH_NGHI";
+  }
+  const cleanId = workshopId.trim().replace(/[^a-zA-Z0-9_]/g, '_');
+  return `DANH_SACH_NGHI_${cleanId}`;
+}
+
+async function getOrEnsureLeaveSheetTitle(sheets: any, spreadsheetId: string, workshopId?: string): Promise<string> {
+  const desiredTitle = formatWorkshopSheetTitle(workshopId);
+  try {
+    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+    const sheetObjects = spreadsheet.data.sheets || [];
+    const sheetNames = sheetObjects.map((s: any) => s.properties?.title || "");
+
+    // 1. Exact match
+    if (sheetNames.includes(desiredTitle)) {
+      return desiredTitle;
+    }
+
+    // 2. Case-insensitive, substring, or alias match
+    if (workshopId && workshopId !== 'all') {
+      const targetLower = workshopId.trim().toLowerCase();
+      const existingMatch = sheetNames.find(name => {
+        const nLower = name.toLowerCase();
+        if (!nLower.startsWith("danh_sach_nghi")) return false;
+        const sub = nLower.replace("danh_sach_nghi_", "").replace("danh_sach_nghi", "");
+        if (!sub) return false;
+        return nLower.includes(targetLower) || 
+               targetLower.includes(sub) || 
+               (targetLower.includes("vanhanh") && sub.includes("vanhanh")) ||
+               (targetLower.includes("vh") && sub.includes("vanhanh")) ||
+               (targetLower.includes("suachua") && sub.includes("suachua")) ||
+               (targetLower.includes("sc") && sub.includes("suachua"));
+      });
+      if (existingMatch) return existingMatch;
+    } else {
+      const defaultMatch = sheetNames.find(name => name.toLowerCase().trim() === "danh_sach_nghi");
+      if (defaultMatch) return defaultMatch;
+    }
+
+    // 3. If not found, create new sheet tab with desiredTitle
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            addSheet: {
+              properties: {
+                title: desiredTitle
+              }
+            }
+          }
+        ]
+      }
+    });
+
+    // Append headers
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `'${desiredTitle}'!A1:M1`,
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [[
+          "Mã đơn", 
+          "Họ và tên", 
+          "Năm sinh", 
+          "Chức danh", 
+          "Kíp", 
+          "Từ ngày", 
+          "Đến ngày", 
+          "Lý do", 
+          "Điện thoại", 
+          "Địa điểm", 
+          "Trạng thái", 
+          "Ngày tạo",
+          "Phân xưởng"
+        ]]
+      }
+    });
+    console.log(`Created leave sheet '${desiredTitle}' and headers.`);
+    return desiredTitle;
+  } catch (e: any) {
+    console.error(`Error ensuring leave sheet for ${workshopId}:`, e.message);
+    return desiredTitle;
+  }
+}
+
+async function ensureLeaveSheetExists(sheets: any, spreadsheetId: string, workshopId?: string) {
+  return await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId, workshopId);
 }
 
 async function syncPendingLeavesToSheets(sheets: any, spreadsheetId: string) {
   try {
-    const db = getFirestoreInstance();
-    const snapshot = await db.collection("pending_leaves").get();
-    if (snapshot.empty) return;
+    const pendingMap = new Map<string, any>();
 
-    console.log(`Found ${snapshot.size} pending leaves in Firestore. Syncing to Google Sheets...`);
-    
-    await ensureLeaveSheetExists(sheets, spreadsheetId);
-    
-    const rowsToAppend: any[][] = [];
-    const docIds: string[] = [];
+    // 1. Collect from localStore
+    if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
+      localStore.pendingLeaves.forEach((item: any) => {
+        if (item && item.id) {
+          pendingMap.set(item.id, item);
+        }
+      });
+    }
 
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      const rowValue = [
-        doc.id,
-        data.name,
-        data.birthYear || "",
-        data.chucDanh,
-        String(data.kip),
-        data.startDate,
-        data.endDate,
-        data.reason || "Giải quyết việc riêng gia đình",
-        data.phone || "",
-        data.location || "Gia Lai",
-        data.status || "Chờ phân ca",
-        data.dateStr
-      ];
-      rowsToAppend.push(rowValue);
-      docIds.push(doc.id);
+    // 2. Collect from Firestore
+    try {
+      const db = getFirestoreInstance();
+      const snapshot = await db.collection("pending_leaves").get();
+      snapshot.forEach(doc => {
+        const item = doc.data();
+        pendingMap.set(doc.id, { id: doc.id, ...item });
+      });
+    } catch (dbErr: any) {
+      console.warn("Notice reading Firestore pending leaves for sync:", dbErr.message);
+    }
+
+    if (pendingMap.size === 0) return;
+
+    console.log(`Found ${pendingMap.size} pending leaves to sync to Google Sheets...`);
+    
+    const pendingByWs: Record<string, { docId: string; data: any }[]> = {};
+    pendingMap.forEach((item, docId) => {
+      const wsId = item.workshopId || 'default';
+      if (!pendingByWs[wsId]) pendingByWs[wsId] = [];
+      pendingByWs[wsId].push({ docId, data: item });
     });
 
-    if (rowsToAppend.length > 0) {
+    const syncedDocIds: string[] = [];
+
+    for (const [wsId, items] of Object.entries(pendingByWs)) {
+      const targetTitle = await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId, wsId === 'default' ? undefined : wsId);
+      const rowsToAppend = items.map(item => [
+        item.docId,
+        item.data.name,
+        item.data.birthYear || "",
+        item.data.chucDanh,
+        String(item.data.kip),
+        item.data.startDate,
+        item.data.endDate,
+        item.data.reason || "Giải quyết việc riêng gia đình",
+        item.data.phone || "",
+        item.data.location || "Gia Lai",
+        item.data.status || "Chờ phân ca",
+        item.data.dateStr || item.data.createdAt || "",
+        item.data.workshopId || (wsId === 'default' ? "" : wsId)
+      ]);
+
       await sheets.spreadsheets.values.append({
         spreadsheetId,
-        range: "DANH_SACH_NGHI!A:L",
+        range: `'${targetTitle}'!A:M`,
         valueInputOption: "RAW",
         requestBody: {
           values: rowsToAppend
         }
       });
-      
-      const batch = db.batch();
-      docIds.forEach(id => {
-        batch.delete(db.collection("pending_leaves").doc(id));
-      });
-      await batch.commit();
-      console.log(`Successfully synced ${rowsToAppend.length} leaves to Google Sheets and cleaned up Firestore.`);
+
+      items.forEach(i => syncedDocIds.push(i.docId));
+    }
+
+    if (syncedDocIds.length > 0) {
+      // Clear from localStore
+      if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
+        localStore.pendingLeaves = localStore.pendingLeaves.filter((p: any) => !syncedDocIds.includes(p.id));
+        persistLocalStore();
+      }
+
+      // Clear from Firestore
+      try {
+        const db = getFirestoreInstance();
+        const batch = db.batch();
+        syncedDocIds.forEach(id => {
+          batch.delete(db.collection("pending_leaves").doc(id));
+        });
+        await batch.commit();
+      } catch (e: any) {}
+
+      console.log(`Successfully synced ${syncedDocIds.length} pending leaves to Google Sheets.`);
     }
   } catch (err: any) {
     console.error("Failed to sync pending leaves to Google Sheets:", err.message);
@@ -798,6 +2108,9 @@ async function syncPendingLeavesToSheets(sheets: any, spreadsheetId: string) {
 }
 
 app.get("/api/sheets/leave-requests", async (req, res) => {
+  const { workshopId } = req.query;
+  const targetWsId = typeof workshopId === 'string' ? workshopId : undefined;
+
   const oauth2Client = getOAuth2Client();
   let tokens = null;
   const tokensStr = req.cookies.google_tokens;
@@ -806,15 +2119,39 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
   }
   if (!tokens) tokens = await loadTokens();
 
-  // FALLBACK: If not connected to Google Sheets, load from Firestore pending_leaves
+  // FALLBACK: If not connected to Google Sheets, load from Firestore or localStore pending_leaves
   if (!tokens) {
+    const pendingLeavesMap = new Map<string, any>();
+    
+    // 1. Add from localStore
+    if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
+      localStore.pendingLeaves.forEach((item: any) => {
+        pendingLeavesMap.set(item.id, {
+          id: item.id,
+          name: item.name || "",
+          birthYear: item.birthYear || "",
+          chucDanh: item.chucDanh || "",
+          kip: String(item.kip || ""),
+          startDate: item.startDate || "",
+          endDate: item.endDate || "",
+          reason: item.reason || "",
+          phone: item.phone || "",
+          location: item.location || "",
+          status: item.status || "Chờ phân ca",
+          createdAt: item.createdAt || item.dateStr || "",
+          workshopId: item.workshopId || "",
+          isPendingSync: true
+        });
+      });
+    }
+
+    // 2. Add from Firestore
     try {
       const db = getFirestoreInstance();
       const snapshot = await db.collection("pending_leaves").get();
-      const pendingLeaves: any[] = [];
       snapshot.forEach(doc => {
         const item = doc.data();
-        pendingLeaves.push({
+        pendingLeavesMap.set(doc.id, {
           id: doc.id,
           name: item.name || "",
           birthYear: item.birthYear || "",
@@ -826,42 +2163,73 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
           phone: item.phone || "",
           location: item.location || "",
           status: item.status || "Chờ phân ca",
-          createdAt: item.dateStr || "",
+          createdAt: item.dateStr || item.createdAt || "",
+          workshopId: item.workshopId || "",
           isPendingSync: true
         });
       });
-      return res.json(pendingLeaves);
     } catch (dbErr: any) {
-      console.error("Failed to load pending leaves from Firestore:", dbErr);
-      return res.json([]);
+      console.warn("Firestore pending leaves read notice (using localStore fallback):", dbErr.message);
     }
+
+    const result = Array.from(pendingLeavesMap.values());
+    return res.json(result);
   }
 
   oauth2Client.setCredentials(tokens);
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const spreadsheetId = '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I';
+  const spreadsheetId = resolveSpreadsheetId(req);
 
   try {
-    // Try to sync pending leaves from Firestore to Sheets first
     await syncPendingLeavesToSheets(sheets, spreadsheetId);
 
-    await ensureLeaveSheetExists(sheets, spreadsheetId);
-    
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: "DANH_SACH_NGHI!A1:L2000"
-    });
-    
-    const rows = response.data.values;
+    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+    const allSheetObjects = spreadsheet.data.sheets || [];
+    const allSheetTitles = allSheetObjects.map((s: any) => s.properties?.title || "");
+
+    let sheetsToRead: string[] = [];
+    if (targetWsId && targetWsId !== 'all') {
+      const sheetTitle = await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId, targetWsId);
+      sheetsToRead = [sheetTitle];
+    } else {
+      sheetsToRead = allSheetTitles.filter(t => t.toLowerCase().startsWith("danh_sach_nghi"));
+      if (sheetsToRead.length === 0) {
+        const defaultTitle = await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId);
+        sheetsToRead = [defaultTitle];
+      }
+    }
+
     const leaveRequests: any[] = [];
-    
-    // Also include any leftover pending leaves in the Firestore cache
+
+    // Also include any leftover pending leaves from localStore and Firestore cache
+    const pendingMap = new Map<string, any>();
+    if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
+      localStore.pendingLeaves.forEach(item => {
+        pendingMap.set(item.id, {
+          id: item.id,
+          name: item.name || "",
+          birthYear: item.birthYear || "",
+          chucDanh: item.chucDanh || "",
+          kip: String(item.kip || ""),
+          startDate: item.startDate || "",
+          endDate: item.endDate || "",
+          reason: item.reason || "",
+          phone: item.phone || "",
+          location: item.location || "",
+          status: item.status || "Chờ phân ca",
+          createdAt: item.createdAt || item.dateStr || "",
+          workshopId: item.workshopId || "",
+          isPendingSync: true
+        });
+      });
+    }
+
     try {
       const db = getFirestoreInstance();
       const snapshot = await db.collection("pending_leaves").get();
       snapshot.forEach(doc => {
         const item = doc.data();
-        leaveRequests.push({
+        pendingMap.set(doc.id, {
           id: doc.id,
           name: item.name || "",
           birthYear: item.birthYear || "",
@@ -873,47 +2241,63 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
           phone: item.phone || "",
           location: item.location || "",
           status: item.status || "Chờ phân ca",
-          createdAt: item.dateStr || "",
+          createdAt: item.dateStr || item.createdAt || "",
+          workshopId: item.workshopId || "",
           isPendingSync: true
         });
       });
     } catch (dbErr) {}
 
-    if (rows && rows.length > 1) {
-      const headers = rows[0];
-      for (let i = 1; i < rows.length; i++) {
-        const row = rows[i];
-        if (!row || row.length === 0 || !row[0]) continue;
-        
-        const item: any = { rowIndex: i + 1 };
-        headers.forEach((header: string, index: number) => {
-          item[header] = row[index] || "";
+    pendingMap.forEach(item => leaveRequests.push(item));
+
+    for (const sheetTitle of sheetsToRead) {
+      try {
+        const response = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `'${sheetTitle}'!A1:M2000`
         });
         
-        const leaveChucDanh = (item["Chức danh"] || "") === "Trực phụ cơ MR" ? "Trực phụ máy MR" : (item["Chức danh"] || "");
-        
-        // Prevent duplicates if already loaded from Firestore pending cache
-        if (leaveRequests.some(l => l.id === item["Mã đơn"])) continue;
+        const rows = response.data.values;
+        if (!rows || rows.length <= 1) continue;
 
-        const leave = {
-          id: item["Mã đơn"] || "",
-          name: item["Họ và tên"] || "",
-          birthYear: item["Năm sinh"] || "",
-          chucDanh: leaveChucDanh,
-          kip: item["Kíp"] || "",
-          startDate: item["Từ ngày"] || "",
-          endDate: item["Đến ngày"] || "",
-          reason: item["Lý do"] || "",
-          phone: item["Điện thoại"] || "",
-          location: item["Địa điểm"] || "",
-          status: item["Trạng thái"] || "",
-          createdAt: item["Ngày tạo"] || "",
-          rowIndex: item.rowIndex
-        };
-        leaveRequests.push(leave);
+        const headers = rows[0];
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          if (!row || row.length === 0 || !row[0]) continue;
+          
+          const item: any = { rowIndex: i + 1, sheetTitle };
+          headers.forEach((header: string, index: number) => {
+            item[header] = row[index] || "";
+          });
+          
+          const leaveChucDanh = (item["Chức danh"] || "") === "Trực phụ cơ MR" ? "Trực phụ máy MR" : (item["Chức danh"] || "");
+          
+          if (leaveRequests.some(l => l.id === item["Mã đơn"])) continue;
+
+          const leave = {
+            id: item["Mã đơn"] || "",
+            name: item["Họ và tên"] || "",
+            birthYear: item["Năm sinh"] || "",
+            chucDanh: leaveChucDanh,
+            kip: item["Kíp"] || "",
+            startDate: item["Từ ngày"] || "",
+            endDate: item["Đến ngày"] || "",
+            reason: item["Lý do"] || "",
+            phone: item["Điện thoại"] || "",
+            location: item["Địa điểm"] || "",
+            status: item["Trạng thái"] || "",
+            createdAt: item["Ngày tạo"] || "",
+            workshopId: item["Phân xưởng"] || item.workshopId || "",
+            rowIndex: item.rowIndex,
+            sheetTitle
+          };
+          leaveRequests.push(leave);
+        }
+      } catch (sheetErr: any) {
+        console.error(`Error reading sheet ${sheetTitle}:`, sheetErr.message);
       }
     }
-    
+
     res.json(leaveRequests);
   } catch (error: any) {
     console.error("Error fetching leave requests:", error);
@@ -923,7 +2307,7 @@ app.get("/api/sheets/leave-requests", async (req, res) => {
 });
 
 app.post("/api/sheets/leave-requests", async (req, res) => {
-  const { name, birthYear, chucDanh, kip, startDate, endDate, reason, phone, location, leaveBalance } = req.body;
+  const { name, birthYear, chucDanh, kip, startDate, endDate, reason, phone, location, leaveBalance, workshopId } = req.body;
   
   if (!name || !chucDanh || !kip || !startDate || !endDate) {
     return res.status(400).json({ error: "Thiếu thông tin bắt buộc" });
@@ -932,12 +2316,12 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
   const normalizedChucDanh = chucDanh === "Trực phụ cơ MR" ? "Trực phụ máy MR" : chucDanh;
   const id = "LEAVE_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
   const dateStr = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-  const status = "Chờ phân ca";
+  const status = req.body.status || "Chờ phân ca";
 
   // Try to get leave balance if not supplied in the request body
   let finalLeaveBalance = leaveBalance;
   if (!finalLeaveBalance) {
-    finalLeaveBalance = await fetchLeaveBalanceHelper(name);
+    finalLeaveBalance = await fetchLeaveBalanceHelper(name, req.body.googleSheetUrl || req.body.spreadsheetId);
   }
 
   // ALWAYS send Zalo Notification first (unblocked by Google Sheets state)
@@ -962,46 +2346,55 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
   }
   if (!tokens) tokens = await loadTokens();
 
-  // If Google Sheets is not authorized, save to Firestore pending_leaves
+  // If Google Sheets is not authorized, save to localStore and Firestore pending_leaves
   if (!tokens) {
+    const leaveItem = {
+      id,
+      name,
+      birthYear: birthYear || "",
+      chucDanh: normalizedChucDanh,
+      kip,
+      startDate,
+      endDate,
+      reason: reason || "Giải quyết việc riêng gia đình",
+      phone: phone || "",
+      location: location || "Gia Lai",
+      status,
+      dateStr,
+      workshopId: workshopId || "",
+      createdAt: new Date().toISOString()
+    };
+
+    const pIdx = localStore.pendingLeaves.findIndex(p => p.id === id);
+    if (pIdx >= 0) localStore.pendingLeaves[pIdx] = leaveItem;
+    else localStore.pendingLeaves.push(leaveItem);
+    persistLocalStore();
+
     try {
       const db = getFirestoreInstance();
-      await db.collection("pending_leaves").doc(id).set({
-        name,
-        birthYear: birthYear || "",
-        chucDanh: normalizedChucDanh,
-        kip,
-        startDate,
-        endDate,
-        reason: reason || "Giải quyết việc riêng gia đình",
-        phone: phone || "",
-        location: location || "Gia Lai",
-        status,
-        dateStr,
-        createdAt: new Date().toISOString()
-      });
-      
-      return res.json({ 
-        success: true, 
-        message: `✅ Đã lưu đơn của đồng chí ${name} lên hệ thống và gửi thông báo Zalo thành công! (Sẽ tự động đồng bộ lên Google Sheets sau)`,
-        id,
-        status
-      });
+      await db.collection("pending_leaves").doc(id).set(leaveItem);
     } catch (dbErr: any) {
-      console.error("Failed to save pending leave:", dbErr);
-      return res.status(500).json({ error: "Lưu đơn thất bại. Không thể lưu vào hệ thống." });
+      console.warn("Firestore save pending leave notice (saved in localStore fallback):", dbErr.message);
     }
+
+    return res.json({ 
+      success: true, 
+      message: `✅ Đã lưu đơn của đồng chí ${name} lên hệ thống và gửi thông báo Zalo thành công! (Sẽ tự động đồng bộ lên Google Sheets sau)`,
+      id,
+      status
+    });
   }
 
   oauth2Client.setCredentials(tokens);
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const spreadsheetId = '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I';
+  const spreadsheetId = resolveSpreadsheetId(req);
+  ensureAnnualLeaveSheetExists(sheets, spreadsheetId, localStore.appSettings?.staffData).catch(() => {});
 
   try {
     // Attempt auto-sync of any previous pending leaves first
     await syncPendingLeavesToSheets(sheets, spreadsheetId);
 
-    await ensureLeaveSheetExists(sheets, spreadsheetId);
+    const sheetTitle = await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId, workshopId);
     
     const rowValue = [
       id,
@@ -1015,12 +2408,13 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
       phone || "",
       location || "Gia Lai",
       status,
-      dateStr
+      dateStr,
+      workshopId || ""
     ];
 
     await sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: "DANH_SACH_NGHI!A:L",
+      range: `'${sheetTitle}'!A:M`,
       valueInputOption: "RAW",
       requestBody: {
         values: [rowValue]
@@ -1051,6 +2445,7 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
         location: location || "Gia Lai",
         status,
         dateStr,
+        workshopId: workshopId || "",
         createdAt: new Date().toISOString()
       });
       
@@ -1072,6 +2467,34 @@ app.get("/api/sheets/leave-balance", async (req, res) => {
     return res.status(400).json({ error: "Thiếu tên nhân viên" });
   }
 
+  const targetName = String(name).trim();
+  const targetNormalized = removeVietnameseAccents(targetName);
+  const spreadsheetId = resolveSpreadsheetId(req);
+
+  const fallbackToLocalStaffData = () => {
+    let staffData: string[][] = localStore.appSettings?.staffData || [];
+    if (staffData.length === 0) {
+      staffData = DEFAULT_WORKSHOPS[0]?.staffData || [];
+    }
+    
+    for (const row of staffData) {
+      if (!Array.isArray(row)) continue;
+      for (let colIdx = 1; colIdx < row.length; colIdx++) {
+        const pName = (row[colIdx] || '').trim();
+        if (pName && (pName.toLowerCase() === targetName.toLowerCase() || removeVietnameseAccents(pName) === targetNormalized)) {
+          return {
+            success: true,
+            entitled: "12",
+            used: "0",
+            remaining: "12",
+            source: "default"
+          };
+        }
+      }
+    }
+    return null;
+  };
+
   const oauth2Client = getOAuth2Client();
   let tokens = null;
   const tokensStr = req.cookies.google_tokens;
@@ -1081,30 +2504,36 @@ app.get("/api/sheets/leave-balance", async (req, res) => {
   if (!tokens) tokens = await loadTokens();
 
   if (!tokens) {
+    const localMatch = fallbackToLocalStaffData();
+    if (localMatch) return res.json(localMatch);
     return res.status(401).json({ error: "Chưa kết nối Google Sheets. Vui lòng kết nối trước." });
   }
 
   oauth2Client.setCredentials(tokens);
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const spreadsheetId = '1pH1-Nj4B1nauoEfO5cZG13Wlk_UrUrFDq_eucf5a-IY';
 
   try {
+    let targetSheetName = "Số ngày phép";
+    try {
+      const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+      const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
+      targetSheetName = sheetNames.find(n => n?.toLowerCase().trim() === "số ngày phép") || sheetNames[0] || "Số ngày phép";
+    } catch (e) {}
+
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "A1:H1000"
+      range: `'${targetSheetName}'!A1:H1000`
     });
 
     const rows = response.data.values;
     if (!rows || rows.length === 0) {
+      const localMatch = fallbackToLocalStaffData();
+      if (localMatch) return res.json(localMatch);
       return res.status(404).json({ error: "Không tìm thấy dữ liệu trong bảng tính" });
     }
 
-    const targetName = String(name).trim();
-    const targetNormalized = removeVietnameseAccents(targetName);
-
     let matchedRow: any[] | null = null;
     
-    // First pass: exact match (ignoring case and whitespace)
     for (const row of rows) {
       if (!row || row.length === 0) continue;
       for (let colIdx = 0; colIdx < Math.min(row.length, 4); colIdx++) {
@@ -1117,7 +2546,6 @@ app.get("/api/sheets/leave-balance", async (req, res) => {
       if (matchedRow) break;
     }
 
-    // Second pass: normalized match (removing accents) if exact match not found
     if (!matchedRow) {
       for (const row of rows) {
         if (!row || row.length === 0) continue;
@@ -1133,32 +2561,65 @@ app.get("/api/sheets/leave-balance", async (req, res) => {
     }
 
     if (!matchedRow) {
+      const localMatch = fallbackToLocalStaffData();
+      if (localMatch) return res.json(localMatch);
       return res.status(404).json({ error: `Không tìm thấy thông tin phép năm của đồng chí ${targetName}` });
     }
 
-    // Extract columns E (index 4), F (index 5), G (index 6)
-    // E: Số ngày phép được hưởng
-    // F: Số ngày phép đã nghỉ
-    // G: Số phép còn lại
-    const entitled = String(matchedRow[4] || '0').trim();
-    const used = String(matchedRow[5] || '0').trim();
-    const remaining = String(matchedRow[6] || '0').trim();
+    const headerRow = rows[0] || [];
+    let oldLeavesCol = 4; // Column E
+    let newLeavesCol = 5; // Column F (Phép năm mới được hưởng)
+    let usedCol = 6;      // Column G (Phép đã nghỉ năm)
+    let remainingCol = 7; // Column H (Phép còn lại hiện tại)
+
+    for (let c = 0; c < headerRow.length; c++) {
+      const hText = removeVietnameseAccents(String(headerRow[c] || '')).toLowerCase();
+      if (hText.includes("nam cu") || hText.includes("phep nam cu")) {
+        oldLeavesCol = c;
+      } else if (hText.includes("nam moi") || hText.includes("duoc huong") || hText.includes("dinh muc")) {
+        newLeavesCol = c;
+      } else if (hText.includes("da nghi")) {
+        usedCol = c;
+      } else if (hText.includes("con lai")) {
+        remainingCol = c;
+      }
+    }
+
+    const oldLeaves = parseFloat(String(matchedRow[oldLeavesCol] || '0').trim()) || 0;
+    const newLeaves = parseFloat(String(matchedRow[newLeavesCol] || '12').trim()) || 12;
+    const usedVal = parseFloat(String(matchedRow[usedCol] || '0').trim()) || 0;
+
+    const calc = calculateLeaveBalanceLogic(oldLeaves, newLeaves, usedVal);
+
+    const entitled = String(calc.entitled);
+    const used = String(calc.usedLeaves);
+    const remaining = (matchedRow[remainingCol] !== undefined && String(matchedRow[remainingCol]).trim() !== '')
+      ? String(matchedRow[remainingCol]).trim()
+      : String(calc.remaining);
 
     return res.json({
       success: true,
       name: targetName,
       entitled,
       used,
-      remaining
+      remaining,
+      note: calc.note,
+      oldLeaves: String(calc.oldLeaves),
+      newLeaves: String(calc.newLeaves)
     });
 
   } catch (error: any) {
     console.error("Error fetching leave balance:", error);
+    const localMatch = fallbackToLocalStaffData();
+    if (localMatch) return res.json(localMatch);
     return res.status(500).json({ error: "Lỗi kết nối hoặc không thể lấy dữ liệu", details: error.message });
   }
 });
 
-app.post("/api/sheets/leave-requests/update-status", async (req, res) => {
+app.post("/api/sheets/sync-staff-leaves", async (req, res) => {
+  const { staffData } = req.body;
+  const spreadsheetId = resolveSpreadsheetId(req);
+
   const oauth2Client = getOAuth2Client();
   let tokens = null;
   const tokensStr = req.cookies.google_tokens;
@@ -1166,48 +2627,112 @@ app.post("/api/sheets/leave-requests/update-status", async (req, res) => {
     try { tokens = JSON.parse(tokensStr); } catch (e) {}
   }
   if (!tokens) tokens = await loadTokens();
-  if (!tokens) return res.status(401).json({ error: "Chưa kết nối Google Sheets." });
+
+  if (!tokens) {
+    return res.status(401).json({ error: "Chưa kết nối Google Sheets. Vui lòng kết nối tài khoản Google trước." });
+  }
 
   oauth2Client.setCredentials(tokens);
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const spreadsheetId = '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I';
 
-  const { ids, status } = req.body;
+  try {
+    const actualData = staffData || localStore.appSettings?.staffData || [];
+    const sheetName = await ensureAnnualLeaveSheetExists(sheets, spreadsheetId, actualData);
+    res.json({
+      success: true,
+      message: `✅ Đã khởi tạo và đồng bộ thành công danh sách nhân sự sang sheet '${sheetName}' trên Google Sheets!`,
+      spreadsheetId
+    });
+  } catch (error: any) {
+    console.error("Error in sync-staff-leaves:", error);
+    if (await handleAuthErrorIfAny(error, res)) return;
+    res.status(500).json({ error: "Không thể đồng bộ danh sách nhân sự sang Google Sheets", details: error.message });
+  }
+});
+
+app.post("/api/sheets/leave-requests/update-status", async (req, res) => {
+  const { ids, status, workshopId } = req.body;
   
   if (!ids || !Array.isArray(ids) || ids.length === 0 || !status) {
     return res.status(400).json({ error: "Tham số không hợp lệ." });
   }
 
-  try {
-    await ensureLeaveSheetExists(sheets, spreadsheetId);
-    
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: "DANH_SACH_NGHI!A1:L2000"
+  // Always update in localStore.pendingLeaves
+  if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
+    localStore.pendingLeaves.forEach((p: any) => {
+      if (ids.includes(p.id)) p.status = status;
     });
-    
-    const rows = response.data.values;
-    if (!rows || rows.length <= 1) {
-      return res.status(404).json({ error: "Không tìm thấy dữ liệu đơn nghỉ" });
+    persistLocalStore();
+  }
+
+  // Always update in Firestore
+  try {
+    const db = getFirestoreInstance();
+    const batch = db.batch();
+    ids.forEach((id: string) => {
+      batch.set(db.collection("pending_leaves").doc(id), { status }, { merge: true });
+    });
+    await batch.commit();
+  } catch (e) {}
+
+  const oauth2Client = getOAuth2Client();
+  let tokens = null;
+  const tokensStr = req.cookies.google_tokens;
+  if (tokensStr) {
+    try { tokens = JSON.parse(tokensStr); } catch (e) {}
+  }
+  if (!tokens) tokens = await loadTokens();
+  
+  if (!tokens) {
+    return res.json({ success: true, message: "Đã cập nhật trạng thái đơn trên hệ thống nội bộ!" });
+  }
+
+  oauth2Client.setCredentials(tokens);
+  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
+  const spreadsheetId = resolveSpreadsheetId(req);
+
+  try {
+    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+    const allSheetObjects = spreadsheet.data.sheets || [];
+    const allSheetTitles = allSheetObjects.map((s: any) => s.properties?.title || "");
+
+    let sheetsToSearch = allSheetTitles.filter(t => t.toLowerCase().startsWith("danh_sach_nghi"));
+    if (sheetsToSearch.length === 0) {
+      const defaultTitle = await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId, workshopId);
+      sheetsToSearch = [defaultTitle];
     }
 
     const updatedRows = [];
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || !row[0]) continue;
-      
-      const itemId = row[0];
-      if (ids.includes(itemId)) {
-        const rowNum = i + 1;
-        await sheets.spreadsheets.values.update({
+    for (const sheetTitle of sheetsToSearch) {
+      try {
+        const response = await sheets.spreadsheets.values.get({
           spreadsheetId,
-          range: `DANH_SACH_NGHI!K${rowNum}`,
-          valueInputOption: "RAW",
-          requestBody: {
-            values: [[status]]
-          }
+          range: `'${sheetTitle}'!A1:M2000`
         });
-        updatedRows.push({ id: itemId, rowNum });
+        
+        const rows = response.data.values;
+        if (!rows || rows.length <= 1) continue;
+
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          if (!row || !row[0]) continue;
+          
+          const itemId = row[0];
+          if (ids.includes(itemId)) {
+            const rowNum = i + 1;
+            await sheets.spreadsheets.values.update({
+              spreadsheetId,
+              range: `'${sheetTitle}'!K${rowNum}`,
+              valueInputOption: "RAW",
+              requestBody: {
+                values: [[status]]
+              }
+            });
+            updatedRows.push({ id: itemId, rowNum, sheetTitle });
+          }
+        }
+      } catch (sheetErr: any) {
+        console.error(`Error updating status on sheet ${sheetTitle}:`, sheetErr.message);
       }
     }
 
@@ -1220,6 +2745,27 @@ app.post("/api/sheets/leave-requests/update-status", async (req, res) => {
 });
 
 app.post("/api/sheets/leave-requests/delete", async (req, res) => {
+  const { ids } = req.body;
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: "Tham số không hợp lệ." });
+  }
+
+  // Always delete from localStore.pendingLeaves
+  if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
+    localStore.pendingLeaves = localStore.pendingLeaves.filter((p: any) => !ids.includes(p.id));
+    persistLocalStore();
+  }
+
+  // Always delete from Firestore
+  try {
+    const db = getFirestoreInstance();
+    const batch = db.batch();
+    ids.forEach((id: string) => {
+      batch.delete(db.collection("pending_leaves").doc(id));
+    });
+    await batch.commit();
+  } catch (e) {}
+
   const oauth2Client = getOAuth2Client();
   let tokens = null;
   const tokensStr = req.cookies.google_tokens;
@@ -1227,86 +2773,76 @@ app.post("/api/sheets/leave-requests/delete", async (req, res) => {
     try { tokens = JSON.parse(tokensStr); } catch (e) {}
   }
   if (!tokens) tokens = await loadTokens();
-  if (!tokens) return res.status(401).json({ error: "Chưa kết nối Google Sheets." });
+  
+  if (!tokens) {
+    return res.json({ success: true, message: "Đã xóa đơn khỏi hệ thống nội bộ!" });
+  }
 
   oauth2Client.setCredentials(tokens);
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const spreadsheetId = '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I';
-
-  const { ids } = req.body;
-  if (!ids || !Array.isArray(ids) || ids.length === 0) {
-    return res.status(400).json({ error: "Tham số không hợp lệ." });
-  }
+  const spreadsheetId = resolveSpreadsheetId(req);
 
   try {
-    await ensureLeaveSheetExists(sheets, spreadsheetId);
-    
     const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-    const sheetObj = spreadsheet.data.sheets?.find((s: any) => s.properties?.title === "DANH_SACH_NGHI");
-    if (!sheetObj) {
-      return res.status(404).json({ error: "Không tìm thấy bảng DANH_SACH_NGHI" });
-    }
-    const sheetId = sheetObj.properties?.sheetId;
-    if (sheetId === undefined || sheetId === null) {
-      return res.status(500).json({ error: "Không tìm thấy Sheet ID" });
-    }
-
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: "DANH_SACH_NGHI!A1:L2000"
-    });
-    
-    const rows = response.data.values;
-    if (!rows || rows.length <= 1) {
-      return res.status(404).json({ error: "Không tìm thấy dữ liệu đơn nghỉ" });
-    }
-
+    const allSheetObjects = spreadsheet.data.sheets || [];
     const normalizedTargetIds = ids.map(id => String(id).trim().toLowerCase());
-    const rowsToDelete: number[] = [];
-    const loggedIds: string[] = [];
 
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || !row[0]) continue;
-      
-      const itemId = String(row[0]).trim();
-      loggedIds.push(itemId);
-      if (normalizedTargetIds.includes(itemId.toLowerCase())) {
-        rowsToDelete.push(i + 1);
-      }
-    }
+    let deletedCount = 0;
 
-    if (rowsToDelete.length === 0) {
-      console.warn("Không tìm thấy đơn cần xóa. Cần xóa:", normalizedTargetIds, "Hiện có trong sheet:", loggedIds);
-      return res.status(404).json({ 
-        error: "Không tìm thấy mã đơn cần xóa trong trang tính.", 
-        details: `Cần xóa: ${ids.join(', ')}. Hiện có: ${loggedIds.slice(0, 10).join(', ')}`
-      });
-    }
+    for (const sheetObj of allSheetObjects) {
+      const sheetTitle = sheetObj.properties?.title || "";
+      if (!sheetTitle.toLowerCase().startsWith("danh_sach_nghi")) continue;
 
-    // Sort row numbers in descending order to prevent index shift during sequential deletion
-    rowsToDelete.sort((a, b) => b - a);
+      const sheetId = sheetObj.properties?.sheetId;
+      if (sheetId === undefined || sheetId === null) continue;
 
-    // Build the requests array for a SINGLE batchUpdate call
-    const requests = rowsToDelete.map(rowNum => ({
-      deleteDimension: {
-        range: {
-          sheetId: Number(sheetId),
-          dimension: "ROWS",
-          startIndex: Number(rowNum - 1),
-          endIndex: Number(rowNum)
+      try {
+        const response = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `'${sheetTitle}'!A1:M2000`
+        });
+        
+        const rows = response.data.values;
+        if (!rows || rows.length <= 1) continue;
+
+        const rowsToDelete: number[] = [];
+
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          if (!row || !row[0]) continue;
+          
+          const itemId = String(row[0]).trim().toLowerCase();
+          if (normalizedTargetIds.includes(itemId)) {
+            rowsToDelete.push(i + 1);
+          }
         }
-      }
-    }));
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests
-      }
-    });
+        if (rowsToDelete.length > 0) {
+          rowsToDelete.sort((a, b) => b - a);
+          const requests = rowsToDelete.map(rowNum => ({
+            deleteDimension: {
+              range: {
+                sheetId: Number(sheetId),
+                dimension: "ROWS",
+                startIndex: Number(rowNum - 1),
+                endIndex: Number(rowNum)
+              }
+            }
+          }));
 
-    res.json({ success: true, deletedCount: rowsToDelete.length });
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId,
+            requestBody: { requests }
+          });
+
+          deletedCount += rowsToDelete.length;
+        }
+      } catch (sheetErr: any) {
+        console.error(`Error deleting rows from sheet ${sheetTitle}:`, sheetErr.message);
+      }
+    }
+
+    res.json({ success: true, deletedCount });
   } catch (error: any) {
     console.error("Error deleting leave request:", error);
     if (await handleAuthErrorIfAny(error, res)) return;
@@ -1710,11 +3246,17 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
 }
 
 startServer();

@@ -6,9 +6,22 @@ import { buildMultiLeaveResults, Leave, ResultItem } from './utils/Quytacxacdinh
 import { exportWord, generateWordBlob, exportSwapDoc, generateSwapBlob, exportLeaveRequestDoc, generateLeaveRequestBlob, exportAllDocsZip } from './utils/wordExport';
 import { renderAsync } from 'docx-preview';
 import SignatureManager from './components/SignatureManager';
-import { Trash2 } from 'lucide-react';
+import LoginForm from './components/LoginForm';
+import UserHeaderBar from './components/UserHeaderBar';
+import WorkshopManagerModal from './components/WorkshopManagerModal';
+import StaffDataEditor from './components/StaffDataEditor';
+import { UserAccount, Workshop } from './types/auth';
+import { Trash2, Settings, RefreshCw } from 'lucide-react';
 
 export default function App() {
+  // Authentication & Workshop RBAC State
+  const [user, setUser] = useState<UserAccount | null>(null);
+  const isAdmin = user?.role === 'super_admin' || user?.role === 'workshop_admin';
+  const [workshops, setWorkshops] = useState<Workshop[]>([]);
+  const [activeWorkshop, setActiveWorkshop] = useState<Workshop | null>(null);
+  const [showWorkshopManager, setShowWorkshopManager] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
+
   const [staffData, setStaffData] = useState<string[][]>(() => {
     const saved = localStorage.getItem('sd');
     const ver = localStorage.getItem('sv');
@@ -58,11 +71,31 @@ export default function App() {
   const [previewBlob, setPreviewBlob] = useState<Blob | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const [isParsing, setIsParsing] = useState(false);
-  const [config, setConfig] = useState({
+  const [showSystemConfig, setShowSystemConfig] = useState(false);
+  const [config, setConfig] = useState<{
+    soVanBan: string;
+    ngayKy: string;
+    nguoiKy: string;
+    chucVuNguoiKy?: string;
+    zaloWebhookUrl: string;
+    googleSheetUrl?: string;
+    companyName?: string;
+    headerWorkshopName?: string;
+    documentCodeSuffix?: string;
+    shortWorkshopName?: string;
+    locationName?: string;
+  }>({
     soVanBan: '',
     ngayKy: '',
     nguoiKy: 'Nguyễn Văn Nghị',
-    zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
+    chucVuNguoiKy: 'Quản Đốc',
+    zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify',
+    googleSheetUrl: 'https://docs.google.com/spreadsheets/d/1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ/edit?gid=0#gid=0',
+    companyName: 'CÔNG TY THỦY ĐIỆN IALY',
+    headerWorkshopName: 'PHÂN XƯỞNG VẬN HÀNH IALY',
+    documentCodeSuffix: '/VHIALY',
+    shortWorkshopName: 'PXVH Ialy',
+    locationName: 'Gia Lai'
   });
 
   const [isGoogleAuth, setIsGoogleAuth] = useState(false);
@@ -71,6 +104,8 @@ export default function App() {
   const [signatures, setSignatures] = useState<Record<string, string>>({});
   const [showSignatureManager, setShowSignatureManager] = useState(false);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState(false);
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [configSaveMsg, setConfigSaveMsg] = useState<string | null>(null);
 
   // Manual Swap State
   const [swapData, setSwapData] = useState({
@@ -98,7 +133,7 @@ export default function App() {
   const [isPreviewingLeave, setIsPreviewingLeave] = useState(false);
 
   // States for Staff Leave Balance from Google Sheets
-  const [leaveBalance, setLeaveBalance] = useState<{ entitled: string; used: string; remaining: string } | null>(null);
+  const [leaveBalance, setLeaveBalance] = useState<{ entitled: string; used: string; remaining: string; note?: string; oldLeaves?: string; newLeaves?: string } | null>(null);
   const [isLoadingLeaveBalance, setIsLoadingLeaveBalance] = useState(false);
   const [leaveBalanceError, setLeaveBalanceError] = useState<string | null>(null);
 
@@ -117,7 +152,10 @@ export default function App() {
         setLeaveBalance({
           entitled: data.entitled,
           used: data.used,
-          remaining: data.remaining
+          remaining: data.remaining,
+          note: data.note,
+          oldLeaves: data.oldLeaves,
+          newLeaves: data.newLeaves
         });
       } else {
         setLeaveBalance(null);
@@ -162,7 +200,82 @@ export default function App() {
   } | null>(null);
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordError, setPasswordError] = useState("");
-  const [activeTab, setActiveTab] = useState<'schedule' | 'leave' | 'swap' | 'staff'>('schedule');
+  const [activeTab, setActiveTab] = useState<'schedule' | 'leave' | 'swap' | 'lookup' | 'auth' | 'staff'>('schedule');
+  const [showTopBtn, setShowTopBtn] = useState(false);
+
+  // Change password states
+  const [showChangePwForm, setShowChangePwForm] = useState(false);
+  const [oldPasswordInput, setOldPasswordInput] = useState("");
+  const [newPasswordInput, setNewPasswordInput] = useState("");
+  const [confirmNewPasswordInput, setConfirmNewPasswordInput] = useState("");
+  const [changePwLoading, setChangePwLoading] = useState(false);
+  const [changePwMsg, setChangePwMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setChangePwMsg(null);
+
+    if (!oldPasswordInput || !newPasswordInput) {
+      setChangePwMsg({ type: 'error', text: 'Vui lòng nhập đầy đủ mật khẩu cũ và mật khẩu mới.' });
+      return;
+    }
+
+    if (newPasswordInput !== confirmNewPasswordInput) {
+      setChangePwMsg({ type: 'error', text: 'Mật khẩu mới và xác nhận mật khẩu không trùng khớp.' });
+      return;
+    }
+
+    if (newPasswordInput.length < 4) {
+      setChangePwMsg({ type: 'error', text: 'Mật khẩu mới phải có ít nhất 4 ký tự.' });
+      return;
+    }
+
+    setChangePwLoading(true);
+    try {
+      const savedUserStr = localStorage.getItem('auth_user');
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      if (savedUserStr) {
+        headers['x-auth-user'] = encodeURIComponent(savedUserStr);
+      }
+
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          oldPassword: oldPasswordInput,
+          newPassword: newPasswordInput
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setChangePwMsg({ type: 'error', text: data.error || 'Đổi mật khẩu thất bại!' });
+      } else {
+        setChangePwMsg({ type: 'success', text: data.message || 'Đổi mật khẩu thành công!' });
+        setOldPasswordInput('');
+        setNewPasswordInput('');
+        setConfirmNewPasswordInput('');
+      }
+    } catch (err: any) {
+      setChangePwMsg({ type: 'error', text: 'Lỗi hệ thống khi đổi mật khẩu.' });
+    } finally {
+      setChangePwLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (window.scrollY > 200) {
+        setShowTopBtn(true);
+      } else {
+        setShowTopBtn(false);
+      }
+    };
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   const closeConfirmModal = () => {
     setConfirmModal(null);
@@ -182,7 +295,140 @@ export default function App() {
     closeConfirmModal();
   };
 
+  const fetchAuthAndWorkshops = useCallback(async () => {
+    setAuthChecking(true);
+    try {
+      const wsRes = await fetch('/api/workshops');
+      const wsData = await wsRes.json();
+      const wsList: Workshop[] = Array.isArray(wsData) ? wsData : [];
+      setWorkshops(wsList);
+
+      const savedUserStr = localStorage.getItem('auth_user');
+      const headers: Record<string, string> = {};
+      if (savedUserStr) {
+        headers['x-auth-user'] = encodeURIComponent(savedUserStr);
+      }
+
+      const meRes = await fetch('/api/auth/me', { headers });
+      const meData = await meRes.json();
+
+      let activeUser: UserAccount | null = null;
+      if (meData.authenticated && meData.user) {
+        activeUser = meData.user;
+        localStorage.setItem('auth_user', JSON.stringify(meData.user));
+      } else if (savedUserStr) {
+        try {
+          activeUser = JSON.parse(savedUserStr);
+        } catch (e) {
+          localStorage.removeItem('auth_user');
+        }
+      }
+
+      if (activeUser) {
+        setUser(activeUser);
+        if (activeUser.role === 'super_admin') {
+          setActiveTab('staff');
+        } else if (activeUser.role === 'workshop_admin') {
+          setActiveTab(prev => prev === 'lookup' ? 'schedule' : prev);
+        }
+        
+        let targetWs = null;
+        if (activeUser.workshopId === 'all') {
+          targetWs = wsList[0] || null;
+        } else {
+          targetWs = wsList.find(w => w.id === activeUser.workshopId) || wsList[0] || null;
+        }
+
+        if (targetWs) {
+          setActiveWorkshop(targetWs);
+          if (targetWs.staffData && Array.isArray(targetWs.staffData)) {
+            setStaffData(targetWs.staffData);
+            localStorage.setItem('sd', JSON.stringify(targetWs.staffData));
+            if (targetWs.staffData[0]?.[0]) {
+              setChucDanh(targetWs.staffData[0][0].trim());
+              setSwapChucDanh(targetWs.staffData[0][0].trim());
+            } else {
+              setChucDanh('');
+              setSwapChucDanh('');
+            }
+          }
+          if (targetWs.config) {
+            setConfig(prev => ({
+              ...prev,
+              ...targetWs.config,
+              soVanBan: targetWs.config.soVanBan !== undefined ? targetWs.config.soVanBan : '',
+              ngayKy: targetWs.config.ngayKy || '',
+              nguoiKy: targetWs.config.nguoiKy || 'Nguyễn Văn Nghị',
+              zaloWebhookUrl: targetWs.config.zaloWebhookUrl || 'https://vhialy.dpdns.org/webhook/notify',
+              googleSheetUrl: (targetWs.config as any)?.googleSheetUrl || prev.googleSheetUrl || 'https://docs.google.com/spreadsheets/d/1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ/edit?gid=0#gid=0',
+              companyName: targetWs.config.companyName || 'CÔNG TY THỦY ĐIỆN IALY',
+              headerWorkshopName: targetWs.config.headerWorkshopName || 'PHÂN XƯỞNG VẬN HÀNH IALY',
+              documentCodeSuffix: targetWs.config.documentCodeSuffix || '/VHIALY',
+              shortWorkshopName: targetWs.config.shortWorkshopName || 'PXVH Ialy',
+              locationName: targetWs.config.locationName || (targetWs.config as any)?.location || 'Gia Lai'
+            }));
+            setLeaveData(prev => ({ ...prev, location: targetWs.config?.locationName || (targetWs.config as any)?.location || 'Gia Lai' }));
+          }
+        }
+      } else {
+        setUser(null);
+        setActiveWorkshop(null);
+      }
+    } catch (e) {
+      console.error("Auth & Workshop fetch error", e);
+    } finally {
+      setAuthChecking(false);
+      setIsSettingsLoaded(true);
+    }
+  }, []);
+
+  const handleSelectWorkshop = (ws: Workshop) => {
+    setActiveWorkshop(ws);
+    if (ws.staffData && Array.isArray(ws.staffData)) {
+      setStaffData(ws.staffData);
+      localStorage.setItem('sd', JSON.stringify(ws.staffData));
+      if (ws.staffData[0]?.[0]) {
+        setChucDanh(ws.staffData[0][0].trim());
+        setSwapChucDanh(ws.staffData[0][0].trim());
+      } else {
+        setChucDanh('');
+        setSwapChucDanh('');
+      }
+    }
+    if (ws.config) {
+      setConfig(prev => ({
+        ...prev,
+        ...ws.config,
+        soVanBan: ws.config.soVanBan !== undefined ? ws.config.soVanBan : '',
+        ngayKy: ws.config.ngayKy || '',
+        nguoiKy: ws.config.nguoiKy || 'Nguyễn Văn Nghị',
+        zaloWebhookUrl: ws.config.zaloWebhookUrl || 'https://vhialy.dpdns.org/webhook/notify',
+        googleSheetUrl: (ws.config as any)?.googleSheetUrl || prev.googleSheetUrl || 'https://docs.google.com/spreadsheets/d/1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ/edit?gid=0#gid=0',
+        companyName: ws.config.companyName || 'CÔNG TY THỦY ĐIỆN IALY',
+        headerWorkshopName: ws.config.headerWorkshopName || 'PHÂN XƯỞNG VẬN HÀNH IALY',
+        documentCodeSuffix: ws.config.documentCodeSuffix || '/VHIALY',
+        shortWorkshopName: ws.config.shortWorkshopName || 'PXVH Ialy',
+        locationName: ws.config.locationName || (ws.config as any)?.location || 'Gia Lai'
+      }));
+      setLeaveData(prev => ({ ...prev, location: ws.config?.locationName || (ws.config as any)?.location || 'Gia Lai' }));
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (e) {
+      console.error("Logout error", e);
+    } finally {
+      localStorage.removeItem('auth_user');
+      setUser(null);
+      setActiveWorkshop(null);
+    }
+  };
+
   useEffect(() => {
+    fetchAuthAndWorkshops();
+
     const checkAuth = async () => {
       setLoadingAuth(true);
       try {
@@ -205,46 +451,19 @@ export default function App() {
     };
     window.addEventListener('message', handleMessage);
 
-    // Fetch cloud settings on mount
-    const fetchSettings = async () => {
+    const fetchSignatures = async () => {
       try {
-        // Fetch app settings
-        const res = await fetch('/api/app-settings');
-        const data = await res.json();
-        if (data.staffData && Array.isArray(data.staffData)) {
-          const migrated = data.staffData.map((row: any) => {
-            if (Array.isArray(row) && row[0] === 'Trực phụ cơ MR') {
-              return ['Trực phụ máy MR', ...row.slice(1)];
-            }
-            return row;
-          });
-          setStaffData(migrated);
-          localStorage.setItem('sd', JSON.stringify(migrated));
-        }
-        if (data.config) {
-          setConfig({
-            soVanBan: data.config.soVanBan || '',
-            ngayKy: data.config.ngayKy || '',
-            nguoiKy: data.config.nguoiKy || 'Nguyễn Văn Nghị',
-            zaloWebhookUrl: data.config.zaloWebhookUrl || 'https://vhialy.dpdns.org/webhook/notify'
-          });
-        }
-
-        // Fetch signatures
         const sigRes = await fetch('/api/signatures');
         const sigData = await sigRes.json();
         setSignatures(sigData);
-
-        setIsSettingsLoaded(true);
       } catch (e) {
-        console.error("Failed to fetch app settings", e);
-        setIsSettingsLoaded(true);
+        console.error("Failed to fetch signatures", e);
       }
     };
-    fetchSettings();
+    fetchSignatures();
 
     return () => window.removeEventListener('message', handleMessage);
-  }, []);
+  }, [fetchAuthAndWorkshops]);
 
   // Save settings to cloud whenever they change (debounced)
   useEffect(() => {
@@ -257,26 +476,143 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ staffData, config })
         });
+
+        if (activeWorkshop && activeWorkshop.id) {
+          const updatedWs = {
+            ...activeWorkshop,
+            staffData,
+            config: {
+              ...(activeWorkshop.config || {}),
+              ...config
+            }
+          };
+          await fetch('/api/workshops', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updatedWs)
+          });
+        }
       } catch (e) {
         console.error("Failed to save app settings", e);
       }
     };
     
-    const timer = setTimeout(saveSettings, 3000);
+    const timer = setTimeout(saveSettings, 1500);
     return () => clearTimeout(timer);
-  }, [staffData, config, isSettingsLoaded]);
+  }, [staffData, config, isSettingsLoaded, activeWorkshop]);
+
+  const handleSaveSystemConfig = async () => {
+    setIsSavingConfig(true);
+    setConfigSaveMsg(null);
+    try {
+      await fetch('/api/app-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ staffData, config })
+      });
+
+      if (activeWorkshop && activeWorkshop.id) {
+        const updatedWs = {
+          ...activeWorkshop,
+          staffData,
+          config: {
+            ...(activeWorkshop.config || {}),
+            ...config
+          }
+        };
+        const res = await fetch('/api/workshops', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedWs)
+        });
+        if (res.ok) {
+          fetchAuthAndWorkshops();
+        }
+      }
+      setConfigSaveMsg('✅ Đã lưu cấu hình hệ thống thành công!');
+      setTimeout(() => setConfigSaveMsg(null), 4000);
+    } catch (e: any) {
+      setConfigSaveMsg('❌ Lỗi khi lưu cấu hình: ' + (e?.message || 'Lỗi kết nối'));
+    } finally {
+      setIsSavingConfig(false);
+    }
+  };
+
+  const [isSyncingLeaves, setIsSyncingLeaves] = useState(false);
+
+  const handleSyncStaffLeavesToSheets = async () => {
+    setIsSyncingLeaves(true);
+    try {
+      const res = await fetch('/api/sheets/sync-staff-leaves', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          staffData,
+          googleSheetUrl: config.googleSheetUrl || ''
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setConfigSaveMsg(data.message || "✅ Đã tạo sẵn danh sách nhân viên và số ngày phép lên Google Sheet thành công!");
+      } else {
+        setConfigSaveMsg(`❌ Đồng bộ thất bại: ${data.error || "Chưa kết nối Google Sheets"}`);
+      }
+    } catch (e: any) {
+      setConfigSaveMsg(`❌ Lỗi khi đồng bộ: ${e.message}`);
+    } finally {
+      setIsSyncingLeaves(false);
+      setTimeout(() => setConfigSaveMsg(null), 6000);
+    }
+  };
+
+  useEffect(() => {
+    if (user && !isAdmin && activeTab === 'staff') {
+      setActiveTab('schedule');
+    }
+  }, [user, isAdmin, activeTab]);
 
   const fetchWaitingLeaves = useCallback(async () => {
     setIsLoadingWaitingLeaves(true);
     try {
-      const res = await fetch('/api/sheets/leave-requests');
+      const url = activeWorkshop?.id ? `/api/sheets/leave-requests?workshopId=${encodeURIComponent(activeWorkshop.id)}` : '/api/sheets/leave-requests';
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         const mappedData = data.map((item: any) => ({
           ...item,
-          chucDanh: item.chucDanh === 'Trực phụ cơ MR' ? 'Trực phụ máy MR' : item.chucDanh
+          chucDanh: ((item.chucDanh === 'Trực phụ cơ MR' ? 'Trực phụ máy MR' : item.chucDanh) || '').trim()
         }));
-        const waiting = mappedData.filter((item: any) => item.status === 'Chờ phân ca');
+        
+        const waiting = mappedData.filter((item: any) => {
+          const statusClean = (item.status || '').trim().toLowerCase().normalize('NFC');
+          if (statusClean !== 'chờ phân ca' && statusClean !== 'cho phan ca' && statusClean !== 'chờ duyệt' && statusClean !== 'cho duyat') return false;
+          
+          if (!activeWorkshop || activeWorkshop.id === 'all') return true;
+          
+          // Match by workshopId, code, or name
+          if (item.workshopId) {
+            const wsMatch = item.workshopId === activeWorkshop.id ||
+                            item.workshopId.toLowerCase() === (activeWorkshop.code || '').toLowerCase() ||
+                            item.workshopId.toLowerCase() === (activeWorkshop.name || '').toLowerCase();
+            if (wsMatch) return true;
+          }
+          
+          // Match by staff name in activeWorkshop staffData
+          if (activeWorkshop.staffData && Array.isArray(activeWorkshop.staffData)) {
+            const allStaffNames = new Set(
+              activeWorkshop.staffData.flatMap((row: string[]) => row.slice(1)).filter(Boolean).map((n: string) => n.trim().normalize('NFC'))
+            );
+            if (allStaffNames.has((item.name || '').trim().normalize('NFC'))) {
+              return true;
+            }
+          }
+          
+          // Default to true if workshopId is absent/empty so unassigned leaves are shown
+          if (!item.workshopId) return true;
+          
+          return false;
+        });
+
         setWaitingLeaves(waiting);
         // Clear selected if they no longer exist in waiting
         setSelectedWaitingLeaveIds(prev => prev.filter(id => waiting.some((w: any) => w.id === id)));
@@ -291,7 +627,7 @@ export default function App() {
     } finally {
       setIsLoadingWaitingLeaves(false);
     }
-  }, []);
+  }, [activeWorkshop]);
 
   useEffect(() => {
     fetchWaitingLeaves();
@@ -315,7 +651,7 @@ export default function App() {
       let d = new Date(start);
       while (d <= end) {
         const dateStr = fmtIn(d);
-        const originalShift = xacDinhCa(d, res.kip);
+        const originalShift = xacDinhCa(d, res.kip, activeWorkshop?.config?.shiftSchedule?.baseDate, activeWorkshop?.config?.shiftSchedule?.shiftsMatrix);
         // Only change N, C, K to F. Keep O as O.
         const finalShift = (originalShift === 'N' || originalShift === 'C' || originalShift === 'K') ? 'F' : originalShift;
         
@@ -339,7 +675,7 @@ export default function App() {
         // If it's a CK Swap, the absent person works the other shift
         if (item.isCKSwap && item.swapAbsentTen && !item.swapAbsentTen.includes('THIẾU NHÂN SỰ')) {
           const name = item.swapAbsentTen.trim().normalize('NFC');
-          const absentShift = xacDinhCa(new Date(item.ngay), item.kiptructhay);
+          const absentShift = xacDinhCa(new Date(item.ngay), item.kiptructhay, activeWorkshop?.config?.shiftSchedule?.baseDate, activeWorkshop?.config?.shiftSchedule?.shiftsMatrix);
           updateMap[`${name}|${dateStr}`] = absentShift;
         }
 
@@ -370,7 +706,7 @@ export default function App() {
         // Only set to F if not already assigned a working shift (like in a swap)
         const currentVal = updateMap[`${name}|${dateStr}`];
         if (!currentVal || currentVal === 'F') {
-          const originalShift = xacDinhCa(new Date(row.ngay), row.absentKip);
+          const originalShift = xacDinhCa(new Date(row.ngay), row.absentKip, activeWorkshop?.config?.shiftSchedule?.baseDate, activeWorkshop?.config?.shiftSchedule?.shiftsMatrix);
           const finalShift = (originalShift === 'N' || originalShift === 'C' || originalShift === 'K') ? 'F' : originalShift;
           updateMap[`${name}|${dateStr}`] = finalShift;
         }
@@ -564,13 +900,14 @@ export default function App() {
       return;
     }
 
-    const ten = timNghi(chucDanh, kip, staffData);
+    const cleanCD = (chucDanh || '').trim();
+    const ten = timNghi(cleanCD, kip, staffData);
     if (!ten) {
-      setAlert(`⚠ Không tìm thấy chức danh "${chucDanh}" trong Kíp ${kip}!`);
+      setAlert(`⚠ Không tìm thấy chức danh "${cleanCD}" trong Kíp ${kip}!`);
       return;
     }
 
-    const allLeaves: Leave[] = [{ kip, start, end, ten, chucDanh }];
+    const allLeaves: Leave[] = [{ kip, start, end, ten, chucDanh: cleanCD }];
     const addErr: string[] = [];
     additionalLeaves.forEach((al, idx) => {
       if (!al.kip && !al.start && !al.end) return;
@@ -579,7 +916,7 @@ export default function App() {
         return;
       }
       const alKip = +al.kip;
-      const alChucDanh = al.chucDanh;
+      const alChucDanh = (al.chucDanh || '').trim();
 
       // Check for duplicate kip within the same chucDanh
       if (allLeaves.some(l => l.kip === alKip && l.chucDanh === alChucDanh)) {
@@ -615,7 +952,7 @@ export default function App() {
       const involvedTitles = Array.from(new Set(allLeaves.map(l => l.chucDanh)));
       
       involvedTitles.forEach(title => {
-        const row = staffData.find(r => r[0] === title);
+        const row = staffData.find(r => r[0] && r[0].trim().toLowerCase() === (title || '').trim().toLowerCase());
         if (row) {
           for (let k = 1; k <= 5; k++) {
             const staffName = row[k] ? row[k].trim() : '';
@@ -646,8 +983,14 @@ export default function App() {
       let mergedHasConflict = false;
       const mergedCoverCount: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
 
+      const customShiftConfig = {
+        baseDate: activeWorkshop?.config?.shiftSchedule?.baseDate,
+        shifts: activeWorkshop?.config?.shiftSchedule?.shiftsMatrix,
+        rules: activeWorkshop?.config?.shiftSchedule?.rulesMatrix,
+      };
+
       Object.keys(groups).forEach(cd => {
-        const buildResult = buildMultiLeaveResults(groups[cd], cd, staffData);
+        const buildResult = buildMultiLeaveResults(groups[cd], cd, staffData, customShiftConfig);
         mergedResults = [...mergedResults, ...buildResult.results];
         mergedExtraRows = [...mergedExtraRows, ...buildResult.extraRows];
         if (buildResult.hasConflict) mergedHasConflict = true;
@@ -675,6 +1018,48 @@ export default function App() {
     if (isGoogleAuth) {
       await updateGoogleSheets();
     }
+
+    // Coi như đã xác nhận đơn nghỉ phép, chuyển trạng thái 'Đã xử lý' để không hiển thị trên hàng chờ nữa
+    let idsToConfirm: string[] = [...selectedWaitingLeaveIds];
+
+    if (currentResult) {
+      const namesInResult = new Set<string>();
+      if (currentResult.allResults && Array.isArray(currentResult.allResults)) {
+        currentResult.allResults.forEach((r: any) => {
+          if (r.ten) namesInResult.add(r.ten.trim().toLowerCase());
+        });
+      }
+      if (currentResult.ten) {
+        namesInResult.add(currentResult.ten.trim().toLowerCase());
+      }
+
+      waitingLeaves.forEach(item => {
+        if (item.name && namesInResult.has(item.name.trim().toLowerCase())) {
+          if (!idsToConfirm.includes(item.id)) {
+            idsToConfirm.push(item.id);
+          }
+        }
+      });
+    }
+
+    if (idsToConfirm.length > 0) {
+      try {
+        await fetch('/api/sheets/leave-requests/update-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ids: idsToConfirm,
+            status: "Đã xử lý",
+            workshopId: activeWorkshop?.id || ''
+          })
+        });
+        setSelectedWaitingLeaveIds([]);
+        fetchWaitingLeaves();
+      } catch (err) {
+        console.error("Lỗi cập nhật trạng thái đơn nghỉ:", err);
+      }
+    }
+
     setIsProcessing(false);
   };
 
@@ -727,11 +1112,43 @@ export default function App() {
 
   const handleExportLeave = async () => {
     setIsProcessing(true);
-    await exportLeaveRequestDoc(leaveData, config, signatures);
-    setIsProcessing(false);
+    try {
+      await exportLeaveRequestDoc(leaveData, config, signatures);
+      if (leaveData.name) {
+        // Tự động lưu / cập nhật đơn xin nghỉ lên hệ thống với trạng thái 'Chờ phân ca'
+        let idsToConfirm: string[] = [];
+        const targetName = leaveData.name.trim().toLowerCase();
+        waitingLeaves.forEach(item => {
+          if (item.name && item.name.trim().toLowerCase() === targetName) {
+            idsToConfirm.push(item.id);
+          }
+        });
+
+        if (idsToConfirm.length > 0) {
+          await fetch('/api/sheets/leave-requests/update-status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ids: idsToConfirm,
+              status: "Chờ phân ca",
+              workshopId: activeWorkshop?.id || ''
+            })
+          });
+          fetchWaitingLeaves();
+          setAlert(`✅ Đã tải file Word và lưu đơn của đồng chí ${leaveData.name} ở trạng thái 'Chờ phân ca' trên hệ thống!`);
+        } else {
+          await saveLeaveToGoogleSheets(false, "Chờ phân ca");
+        }
+      }
+    } catch (err: any) {
+      console.error("Lỗi khi xuất/lưu đơn:", err);
+      setAlert(`❌ Có lỗi khi xuất file Word hoặc lưu lên hệ thống: ${err.message || err}`);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
-  const saveLeaveToGoogleSheets = async () => {
+  const saveLeaveToGoogleSheets = async (closeModal: boolean = true, statusOverride?: string) => {
     if (!leaveData.name) {
       setAlert("⚠ Vui lòng nhập Họ và tên người xin nghỉ.");
       return;
@@ -740,6 +1157,8 @@ export default function App() {
     try {
       const payload = {
         ...leaveData,
+        status: statusOverride || "Chờ phân ca",
+        workshopId: activeWorkshop?.id || '',
         leaveBalance: leaveBalance ? {
           entitled: leaveBalance.entitled,
           used: leaveBalance.used,
@@ -753,9 +1172,11 @@ export default function App() {
       });
       const resData = await res.json();
       if (res.ok) {
-        setAlert(resData.message || `✅ Đã lưu đơn của đồng chí ${leaveData.name} lên hệ thống ở trạng thái Chờ phân ca!`);
+        setAlert(resData.message || `✅ Đã lưu đơn của đồng chí ${leaveData.name} lên hệ thống!`);
         fetchWaitingLeaves();
-        setShowPreview(false);
+        if (closeModal) {
+          setShowPreview(false);
+        }
       } else {
         if (res.status === 401 || resData.auth_expired) {
           setIsGoogleAuth(false);
@@ -782,13 +1203,13 @@ export default function App() {
     const first = selectedItems[0];
     setNgayBatDau(first.startDate);
     setNgayKetThuc(first.endDate);
-    setChucDanh(first.chucDanh);
+    setChucDanh((first.chucDanh || '').trim());
     setKipNghi(String(first.kip));
 
     // Các đơn còn lại cho vào concurrent / additionalLeaves
     const rem = selectedItems.slice(1);
     const newAdditional = rem.map(item => ({
-      chucDanh: item.chucDanh,
+      chucDanh: (item.chucDanh || '').trim(),
       kip: String(item.kip),
       start: item.startDate,
       end: item.endDate
@@ -799,7 +1220,6 @@ export default function App() {
   };
 
   const handleDeleteWaitingLeaves = (ids: string[], isSingleName?: string) => {
-    if (!isGoogleAuth) return;
     if (ids.length === 0) return;
     
     const message = isSingleName 
@@ -860,104 +1280,77 @@ export default function App() {
       let isSheetSynced = false;
       let sheetSyncError = "";
 
-      // 2. Clear/Synchronize schedule & meal reports if authenticated
-      if (isGoogleAuth) {
+      // Write to "Số ngày phép" if requested
+      if (isGoogleAuth && shouldUpdateAnnualLeave) {
         try {
-          const updates = getSheetsUpdates(currentResult);
-          if (updates.length > 0) {
-            const syncRes = await fetch('/api/sheets/update', {
+          const getTongCaTrucPhaiThay = (resItem: any) => {
+            let dem = 0;
+            let ngaychao = new Date(resItem.start);
+            const ngayEnd = new Date(resItem.end);
+            while (ngaychao <= ngayEnd) {
+              const cahientai = xacDinhCa(ngaychao, resItem.kip, activeWorkshop?.config?.shiftSchedule?.baseDate, activeWorkshop?.config?.shiftSchedule?.shiftsMatrix);
+              if (cahientai !== 'O') dem++;
+              ngaychao.setDate(ngaychao.getDate() + 1);
+            }
+            return dem;
+          };
+
+          const updatesAnnualLeaves = currentResult.allResults
+            .filter((r: any) => r.ten && !r.ten.includes("THIẾU NHÂN SỰ"))
+            .map((r: any) => ({
+              name: r.ten,
+              tongcatrucphaithay: getTongCaTrucPhaiThay(r)
+            }));
+
+          if (updatesAnnualLeaves.length > 0) {
+            const annualRes = await fetch('/api/sheets/update-annual-leaves', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                spreadsheetId: '1HgGW-FvoGQXtj7V_JCMD-7Tuue0rTIM-bmohGmgqm6I',
-                updates
+                spreadsheetId: '1pH1-Nj4B1nauoEfO5cZG13Wlk_UrUrFDq_eucf5a-IY',
+                updates: updatesAnnualLeaves
               })
             });
-            const syncData = await syncRes.json();
-            if (syncRes.ok && syncData.success) {
-              isSheetSynced = true;
+            const annualData = await annualRes.json();
+            if (annualRes.ok && annualData.success) {
+              let msg = "Ghi bảng theo dõi phép năm thành công!";
+              if (annualData.skippedNames && annualData.skippedNames.length > 0) {
+                msg += ` (Không tìm thấy tên: ${annualData.skippedNames.join(', ')})`;
+              }
+              console.log(msg);
             } else {
-              sheetSyncError = syncData.error || "Lỗi máy chủ";
+              console.error("Lỗi ghi phép năm:", annualData.error);
+              sheetSyncError = `Lỗi phép năm: ${annualData.error || "Không rõ"}`;
             }
-          } else {
-            isSheetSynced = true; // No updates needed
           }
-        } catch (syncErr: any) {
-          console.error("Auto-sync error:", syncErr);
-          sheetSyncError = syncErr.message;
-        }
-
-        // 2b. Write to "Số ngày phép" if requested
-        if (shouldUpdateAnnualLeave) {
-          try {
-            const getTongCaTrucPhaiThay = (resItem: any) => {
-              let dem = 0;
-              let ngaychao = new Date(resItem.start);
-              const ngayEnd = new Date(resItem.end);
-              while (ngaychao <= ngayEnd) {
-                const cahientai = xacDinhCa(ngaychao, resItem.kip);
-                if (cahientai !== 'O') dem++;
-                ngaychao.setDate(ngaychao.getDate() + 1);
-              }
-              return dem;
-            };
-
-            const updatesAnnualLeaves = currentResult.allResults
-              .filter((r: any) => r.ten && !r.ten.includes("THIẾU NHÂN SỰ"))
-              .map((r: any) => ({
-                name: r.ten,
-                tongcatrucphaithay: getTongCaTrucPhaiThay(r)
-              }));
-
-            if (updatesAnnualLeaves.length > 0) {
-              const annualRes = await fetch('/api/sheets/update-annual-leaves', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  spreadsheetId: '1pH1-Nj4B1nauoEfO5cZG13Wlk_UrUrFDq_eucf5a-IY',
-                  updates: updatesAnnualLeaves
-                })
-              });
-              const annualData = await annualRes.json();
-              if (annualRes.ok && annualData.success) {
-                let msg = "Ghi bảng theo dõi phép năm thành công!";
-                if (annualData.skippedNames && annualData.skippedNames.length > 0) {
-                  msg += ` (Không tìm thấy tên: ${annualData.skippedNames.join(', ')})`;
-                }
-                console.log(msg);
-              } else {
-                console.error("Lỗi ghi phép năm:", annualData.error);
-                sheetSyncError = (sheetSyncError ? sheetSyncError + "; " : "") + `Lỗi phép năm: ${annualData.error || "Không rõ"}`;
-              }
-            }
-          } catch (annualErr: any) {
-            console.error("Annual leave update error:", annualErr);
-            sheetSyncError = (sheetSyncError ? sheetSyncError + "; " : "") + `Lỗi phép năm: ${annualErr.message}`;
-          }
+        } catch (annualErr: any) {
+          console.error("Annual leave update error:", annualErr);
+          sheetSyncError = `Lỗi phép năm: ${annualErr.message}`;
         }
       }
 
-      // 3. Update waiting leaves status to 'Đã xử lý'
+      // Update waiting leaves status to 'Đã xử lý'
       if (selectedWaitingLeaveIds.length > 0) {
         const updateRes = await fetch('/api/sheets/leave-requests/update-status', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ids: selectedWaitingLeaveIds,
-            status: "Đã xử lý"
+            status: "Đã xử lý",
+            workshopId: activeWorkshop?.id || ''
           })
         });
         
         if (updateRes.ok) {
           if (isGoogleAuth) {
-            let detailMsg = "Hệ thống đã đồng bộ lịch mới và tự động ghi vào Bảng báo cơm ca.";
+            let detailMsg = "";
             if (shouldUpdateAnnualLeave) {
-              detailMsg += " Đồng thời đã tự động ghi số ngày phép vào sheet Số ngày phép.";
+              detailMsg = "Đã tự động ghi số ngày phép vào sheet Số ngày phép.";
             }
             if (sheetSyncError) {
-              setAlert(`🎁 Đã xuất ZIP & đổi trạng thái đơn thành 'Đã xử lý', nhưng gặp lỗi đồng bộ bảng: ${sheetSyncError}`);
+              setAlert(`🎁 Đã xuất ZIP & đổi trạng thái đơn thành 'Đã xử lý', nhưng gặp lỗi: ${sheetSyncError}`);
             } else {
-              setAlert(`🎁 Xuất trọn bộ file ZIP thành công! ${detailMsg} Trạng thái đơn chuyển thành 'Đã xử lý'.`);
+              setAlert(`🎁 Xuất trọn bộ file ZIP thành công! ${detailMsg} Trạng thái đơn đã chuyển thành 'Đã xử lý'.`);
             }
           } else {
             setAlert("✅ Đã xuất trọn bộ hồ sơ dạng ZIP và cập nhật trạng thái 'Đã xử lý' lên Google Sheets!");
@@ -972,16 +1365,15 @@ export default function App() {
         }
       } else {
         if (isGoogleAuth) {
-          let detailMsg = "đồng bộ lịch trực, tự động ghi vào Bảng báo cơm ca";
+          let detailMsg = "";
           if (shouldUpdateAnnualLeave) {
-            detailMsg += " & cập nhật số ngày phép vào sheet Số ngày phép";
+            detailMsg = "Đã cập nhật số ngày phép vào sheet Số ngày phép.";
           }
           if (sheetSyncError) {
             setAlert(`🎁 Đã xuất hồ sơ ZIP, nhưng gặp lỗi: ${sheetSyncError}`);
           } else {
-            setAlert(`🎁 Đã xuất trọn bộ hồ sơ dạng ZIP, ${detailMsg} thành công!`);
+            setAlert(`🎁 Đã xuất trọn bộ hồ sơ dạng ZIP thành công! ${detailMsg}`);
           }
-          setAlert(`🎁 Đã xuất trọn bộ hồ sơ dạng ZIP & ${detailMsg} thành công!`);
         } else {
           setAlert("✅ Đã tải xuống hồ sơ dạng ZIP thành công!");
         }
@@ -1176,71 +1568,126 @@ export default function App() {
     return (Math.max(...counts) - Math.min(...counts)) <= 1;
   };
 
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white text-sm font-semibold">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          <span>Đang xác thực quyền truy cập hệ thống...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginForm onLoginSuccess={fetchAuthAndWorkshops} />;
+  }
+
+  const isSuperAdmin = user.role === 'super_admin';
+  const isWorkshopAdmin = user.role === 'workshop_admin';
+
   return (
     <div className="min-h-screen flex flex-col bg-[var(--bg)]">
       {/* Top Navbar */}
-      <nav id="top-navbar" className="w-full bg-white border-b border-slate-200 py-3.5 px-4 md:px-8 shadow-sm flex flex-col lg:flex-row items-center justify-between gap-4 relative z-40">
+      <nav id="top-navbar" className="w-full bg-white border-b border-slate-200 py-3.5 px-4 md:px-8 shadow-md flex flex-col lg:flex-row items-center justify-between gap-4 sticky top-0 z-40">
         <div className="flex flex-col sm:flex-row items-center gap-4">
-          {/* Logo container exactly like screenshot */}
+          {/* Logo container */}
           <div className="flex items-center select-none">
             <img 
-              src="https://i.ibb.co/fYS7WtdB/LOGO.png" 
+              src="https://i.ibb.co/r2BTySkt/2343.png" 
               alt="EVN Công Ty Thủy Điện Ialy Logo" 
               className="h-[48px] md:h-[54px] w-auto object-contain"
               referrerPolicy="no-referrer"
             />
           </div>
           {/* App Title with separator */}
-          <div className="text-[#053d6c] font-black text-lg md:text-xl font-sans tracking-tight sm:border-l sm:border-slate-200 sm:pl-4 py-1 flex items-center h-full">
-            Phân xưởng vận hành laly
+          <div className="sm:border-l sm:border-slate-200 sm:pl-4 py-0.5 flex flex-col justify-center h-full text-center sm:text-left">
+            <div className="text-[#053d6c] font-black text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5">
+              {config?.companyName || activeWorkshop?.config?.companyName || 'CÔNG TY THỦY ĐIỆN IALY'}
+            </div>
+            <div className="text-[#053d6c] font-black text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5">
+              {activeWorkshop ? activeWorkshop.name : 'Phân xưởng Vận hành Ialy'}
+            </div>
           </div>
         </div>
 
         {/* Navigation Tabs on the Right */}
         <div className="flex items-center gap-4 md:gap-7 flex-wrap justify-center">
+          {!isSuperAdmin && (
+            <>
+              <button
+                id="nav-schedule-btn"
+                className={`text-[14px] md:text-[15px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+                  activeTab === 'schedule'
+                    ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                    : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+                }`}
+                onClick={() => setActiveTab('schedule')}
+              >
+                Lịch trực thay ca vận hành
+              </button>
+              <button
+                id="nav-leave-btn"
+                className={`text-[14px] md:text-[15px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+                  activeTab === 'leave'
+                    ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                    : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+                }`}
+                onClick={() => setActiveTab('leave')}
+              >
+                Đơn xin nghỉ phép
+              </button>
+              <button
+                id="nav-swap-btn"
+                className={`text-[14px] md:text-[15px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+                  activeTab === 'swap'
+                    ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                    : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+                }`}
+                onClick={() => setActiveTab('swap')}
+              >
+                Đơn đổi ca
+              </button>
+              {!isWorkshopAdmin && (
+                <button
+                  id="nav-lookup-btn"
+                  className={`text-[14px] md:text-[15px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+                    activeTab === 'lookup'
+                      ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                      : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+                  }`}
+                  onClick={() => setActiveTab('lookup')}
+                >
+                  Tra cứu thông tin
+                </button>
+              )}
+            </>
+          )}
+
+          {isAdmin && (
+            <button
+              id="nav-staff-btn"
+              className={`text-[14px] md:text-[15px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+                activeTab === 'staff'
+                  ? 'text-[#00529c] border-[#00529c] font-extrabold'
+                  : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
+              }`}
+              onClick={() => setActiveTab('staff')}
+            >
+              {isSuperAdmin ? 'Quản lý Admin' : 'Nhân sự'}
+            </button>
+          )}
+
           <button
-            id="nav-schedule-btn"
-            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
-              activeTab === 'schedule'
+            id="nav-auth-btn"
+            className={`text-[14px] md:text-[15px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
+              activeTab === 'auth'
                 ? 'text-[#00529c] border-[#00529c] font-extrabold'
                 : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
             }`}
-            onClick={() => setActiveTab('schedule')}
+            onClick={() => setActiveTab('auth')}
           >
-            Lịch trực thay ca vận hành
-          </button>
-          <button
-            id="nav-leave-btn"
-            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
-              activeTab === 'leave'
-                ? 'text-[#00529c] border-[#00529c] font-extrabold'
-                : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
-            }`}
-            onClick={() => setActiveTab('leave')}
-          >
-            Đơn xin nghỉ phép
-          </button>
-          <button
-            id="nav-swap-btn"
-            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
-              activeTab === 'swap'
-                ? 'text-[#00529c] border-[#00529c] font-extrabold'
-                : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
-            }`}
-            onClick={() => setActiveTab('swap')}
-          >
-            Đơn đổi ca
-          </button>
-          <button
-            id="nav-staff-btn"
-            className={`text-[12px] md:text-[13px] font-bold uppercase transition-all cursor-pointer pb-1.5 border-b-2 outline-none ${
-              activeTab === 'staff'
-                ? 'text-[#00529c] border-[#00529c] font-extrabold'
-                : 'text-slate-500 hover:text-[#00529c] border-transparent hover:border-[#00529c]/50'
-            }`}
-            onClick={() => setActiveTab('staff')}
-          >
-            Nhân sự
+            Tài khoản
           </button>
         </div>
       </nav>
@@ -1261,6 +1708,39 @@ export default function App() {
       {/* Container for Main Content */}
       <div className="wrap !pt-8 !pb-16 flex-1 w-full max-w-[1200px] mx-auto px-4 md:px-6">
 
+      {/* Admin Quick Banner for Super Admin / Workshop Admin */}
+      {(user?.role === 'super_admin' || user?.role === 'workshop_admin') && (
+        <div className="mb-6 p-4 md:p-5 bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white rounded-2xl border border-emerald-500/40 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="p-3 bg-emerald-500/20 text-emerald-400 rounded-xl border border-emerald-500/30 shrink-0">
+              <Settings className="w-7 h-7" />
+            </div>
+            <div>
+              <div className="font-extrabold text-base md:text-lg text-white flex items-center gap-2 flex-wrap">
+                <span>Xin chào, {user.fullName}!</span>
+                <span className={`text-[11px] font-black px-2 py-0.5 rounded-md uppercase tracking-wider ${
+                  user.role === 'super_admin' 
+                    ? 'bg-amber-400 text-slate-950' 
+                    : 'bg-emerald-400 text-slate-950'
+                }`}>
+                  {user.role === 'super_admin' ? 'Super Admin' : 'Admin Phân Xưởng'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-1">
+                Tài khoản của bạn có quyền quản trị phân xưởng, phân quyền người dùng, cấu hình người ký văn bản và bật/tắt các tính năng hệ thống.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowWorkshopManager(true)}
+            className="w-full sm:w-auto px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs md:text-sm rounded-xl shadow-lg transition-all cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap active:scale-95 shrink-0"
+          >
+            <Settings size={17} />
+            <span>Mở Bảng Quản lý Phân xưởng & Tài khoản</span>
+          </button>
+        </div>
+      )}
+
       {activeTab === 'leave' && (
         <>
           <div className="card" id="leave-creator-card">
@@ -1270,10 +1750,13 @@ export default function App() {
           <div className="field">
             <label>Chức danh</label>
             <select value={leaveData.chucDanh} onChange={e => {
-              const cd = e.target.value;
+              const cd = e.target.value.trim();
               setLeaveData({...leaveData, chucDanh: cd, name: ''});
             }}>
-              {staffData.map(r => <option key={r[0]} value={r[0]}>{r[0]}</option>)}
+              {staffData.map(r => {
+                const title = (r[0] || '').trim();
+                return <option key={title} value={title}>{title}</option>;
+              })}
             </select>
           </div>
           <div className="field">
@@ -1292,7 +1775,7 @@ export default function App() {
               onChange={e => setLeaveData({...leaveData, name: e.target.value})} 
             />
             <datalist id="leave-staff-list">
-              {staffData.find(r => r[0] === leaveData.chucDanh)?.slice(1).filter(Boolean).map(name => (
+              {staffData.find(r => r[0] && r[0].trim().toLowerCase() === (leaveData.chucDanh || '').trim().toLowerCase())?.slice(1).filter(Boolean).map(name => (
                 <option key={name} value={name} />
               ))}
             </datalist>
@@ -1355,14 +1838,14 @@ export default function App() {
           </div>
 
           {/* Leave Balance Box from Google Sheets */}
-          <div className="col-span-2 mt-2 p-3 bg-slate-50 border border-slate-100 rounded-xl">
+          <div className="col-span-2 mt-2 p-3.5 bg-slate-50 border border-slate-100 rounded-xl">
             <div className="flex justify-between items-center mb-2">
-              <span className="text-[12px] font-bold text-slate-700 uppercase tracking-wider">Thông tin phép năm </span>
+              <span className="text-[13.5px] font-bold text-slate-800 uppercase tracking-wider">Thông tin phép năm</span>
               {leaveData.name && (
                 <button 
                   type="button" 
                   onClick={() => fetchLeaveBalance(leaveData.name)}
-                  className="text-xs text-[#00529c] hover:underline flex items-center gap-1 font-semibold cursor-pointer"
+                  className="text-sm text-[#00529c] hover:underline flex items-center gap-1 font-semibold cursor-pointer"
                   disabled={isLoadingLeaveBalance}
                 >
                   {isLoadingLeaveBalance ? <span className="spin mr-1"></span> : '🔄'} Cập nhật
@@ -1370,26 +1853,37 @@ export default function App() {
               )}
             </div>
             {isLoadingLeaveBalance ? (
-              <div className="text-xs text-slate-500 py-2 flex items-center gap-2 justify-center">
+              <div className="text-sm text-slate-500 py-2 flex items-center gap-2 justify-center">
                 <span className="spin"></span> Đang tải thông tin phép năm ...
               </div>
             ) : leaveBalance ? (
-              <div className="grid grid-cols-3 gap-2">
-                <div className="bg-blue-50/60 p-2.5 rounded-lg border border-blue-100 text-center">
-                  <div className="text-[10px] text-blue-700 font-medium uppercase">Phép được hưởng</div>
-                  <div className="text-lg font-extrabold text-blue-900 mt-0.5">{leaveBalance.entitled} <span className="text-xs font-normal">ngày</span></div>
+              <div>
+                <div className="grid grid-cols-3 gap-2.5">
+                  <div className="bg-blue-50/60 p-3 rounded-lg border border-blue-100 text-center">
+                    <div className="text-[12px] text-blue-700 font-bold uppercase tracking-wide">Phép được hưởng</div>
+                    <div className="text-xl font-extrabold text-blue-900 mt-0.5">{leaveBalance.entitled} <span className="text-sm font-normal">ngày</span></div>
+                    {leaveBalance.oldLeaves && parseFloat(leaveBalance.oldLeaves) > 0 ? (
+                      <div className="text-[10.5px] text-blue-600 font-medium mt-0.5">({leaveBalance.oldLeaves}d năm cũ + {leaveBalance.newLeaves || '12'}d năm mới)</div>
+                    ) : null}
+                  </div>
+                  <div className="bg-amber-50/60 p-3 rounded-lg border border-amber-100 text-center">
+                    <div className="text-[12px] text-amber-700 font-bold uppercase tracking-wide">Phép đã nghỉ</div>
+                    <div className="text-xl font-extrabold text-amber-900 mt-0.5">{leaveBalance.used} <span className="text-sm font-normal">ngày</span></div>
+                  </div>
+                  <div className="bg-emerald-50/60 p-3 rounded-lg border border-emerald-100 text-center">
+                    <div className="text-[12px] text-emerald-700 font-bold uppercase tracking-wide">Phép còn lại</div>
+                    <div className="text-xl font-extrabold text-emerald-900 mt-0.5">{leaveBalance.remaining} <span className="text-sm font-normal">ngày</span></div>
+                  </div>
                 </div>
-                <div className="bg-amber-50/60 p-2.5 rounded-lg border border-amber-100 text-center">
-                  <div className="text-[10px] text-amber-700 font-medium uppercase">Phép đã nghỉ</div>
-                  <div className="text-lg font-extrabold text-amber-900 mt-0.5">{leaveBalance.used} <span className="text-xs font-normal">ngày</span></div>
-                </div>
-                <div className="bg-emerald-50/60 p-2.5 rounded-lg border border-emerald-100 text-center">
-                  <div className="text-[10px] text-emerald-700 font-medium uppercase">Phép còn lại</div>
-                  <div className="text-lg font-extrabold text-emerald-900 mt-0.5">{leaveBalance.remaining} <span className="text-xs font-normal">ngày</span></div>
-                </div>
+                {leaveBalance.note && (
+                  <div className="mt-2 text-[11.5px] text-slate-700 bg-emerald-50/80 border border-emerald-100/80 px-3 py-1.5 rounded-lg flex items-center gap-1.5 font-medium leading-relaxed">
+                    <span className="shrink-0">💡</span>
+                    <span>{leaveBalance.note}</span>
+                  </div>
+                )}
               </div>
             ) : leaveBalanceError ? (
-              <div className="text-xs text-amber-600 font-medium p-2 bg-amber-50 rounded-lg border border-amber-100 text-center">
+              <div className="text-sm text-amber-600 font-medium p-2.5 bg-amber-50 rounded-lg border border-amber-100 text-center">
                 ⚠ {leaveBalanceError}
               </div>
             ) : null}
@@ -1442,53 +1936,54 @@ export default function App() {
 </div>
         {alert && <div className={`alert ${alert.startsWith('✅') ? 'asuc' : 'aerr'}`}>{alert}</div>}
         
-        {isGoogleAuth && (
-          <div className="mb-6 p-4 border border-var(--acc-light) rounded-xl bg-var(--acc-light-5) hover:border-var(--acc) transition-all">
-            <div className="flex items-center justify-between mb-3 border-b pb-2 border-var(--acc-light) flex-wrap gap-2">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-bold text-var(--acc) uppercase tracking-wider flex items-center gap-1.5">
-                  📥 Đơn nghỉ chờ xếp lịch đi ca ({waitingLeaves.length})
-                </span>
-                {isLoadingWaitingLeaves && <div className="spin w-3.5 h-3.5 border-2 border-t-transparent border-var(--acc) rounded-full animate-spin"></div>}
-              </div>
-              <div className="flex gap-2 select-none">
-                <button 
-                  className="px-2 py-1 text-xs bg-white text-var(--acc) border border-var(--acc-light) rounded hover:bg-var(--acc-light-10) font-medium cursor-pointer transition-colors"
-                  onClick={fetchWaitingLeaves}
-                  disabled={isLoadingWaitingLeaves}
-                >
-                  🔄 Cập nhật
-                </button>
-                {selectedWaitingLeaveIds.length > 0 && (
-                  <>
-                    <button 
-                      className="px-2.5 py-1 text-xs bg-[#4f46e5] text-white rounded hover:bg-[#4338ca] font-bold cursor-pointer transition-colors"
-                      onClick={applyWaitingLeavesToForm}
-                    >
-                      ⚡ Áp dụng {selectedWaitingLeaveIds.length} người
-                    </button>
-                    <button 
-                      className="px-2.5 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 font-bold cursor-pointer transition-colors flex items-center gap-1"
-                      onClick={() => handleDeleteWaitingLeaves(selectedWaitingLeaveIds)}
-                    >
-                      <Trash2 size={12} /> Xoá {selectedWaitingLeaveIds.length} đơn
-                    </button>
-                  </>
-                )}
-              </div>
+        <div className="mb-6 p-3.5 sm:p-4 border border-var(--acc-light) rounded-xl bg-var(--acc-light-5) hover:border-var(--acc) transition-all">
+          <div className="flex items-center justify-between mb-3 border-b pb-2.5 border-var(--acc-light) flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[13.5px] sm:text-sm md:text-base font-extrabold text-var(--acc) uppercase tracking-wider flex items-center gap-1.5">
+                📥 Đơn nghỉ chờ xếp lịch đi ca ({waitingLeaves.length})
+              </span>
+              {isLoadingWaitingLeaves && <div className="spin w-4 h-4 border-2 border-t-transparent border-var(--acc) rounded-full animate-spin"></div>}
             </div>
-            
-            {waitingLeaves.length === 0 ? (
-              <p className="text-[12px] text-var(--txt2) italic">Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca trên Google Sheets.</p>
-            ) : (
-              <div className="max-h-[220px] overflow-y-auto pr-1">
-                <div className="flex flex-col gap-2">
+            <div className="flex gap-2 flex-wrap select-none">
+              <button 
+                className="px-2.5 py-1.5 text-xs sm:text-[13px] bg-white text-var(--acc) border border-var(--acc-light) rounded-lg hover:bg-var(--acc-light-10) font-semibold cursor-pointer transition-colors shadow-xs"
+                onClick={fetchWaitingLeaves}
+                disabled={isLoadingWaitingLeaves}
+              >
+                🔄 Cập nhật
+              </button>
+              {selectedWaitingLeaveIds.length > 0 && (
+                <>
+                  <button 
+                    className="px-3 py-1.5 text-xs sm:text-[13px] bg-[#4f46e5] text-white rounded-lg hover:bg-[#4338ca] font-bold cursor-pointer transition-colors shadow-xs"
+                    onClick={applyWaitingLeavesToForm}
+                  >
+                    ⚡ Áp dụng {selectedWaitingLeaveIds.length} người
+                  </button>
+                  <button 
+                    className="px-3 py-1.5 text-xs sm:text-[13px] bg-red-600 text-white rounded-lg hover:bg-red-700 font-bold cursor-pointer transition-colors flex items-center gap-1 shadow-xs"
+                    onClick={() => handleDeleteWaitingLeaves(selectedWaitingLeaveIds)}
+                  >
+                    <Trash2 size={13} /> Xoá {selectedWaitingLeaveIds.length} đơn
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          
+          {waitingLeaves.length === 0 ? (
+            <p className="text-[13px] text-var(--txt2) italic py-1">
+              {isGoogleAuth ? "Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca trên Google Sheets." : "Không có đơn xin nghỉ phép nào ở trạng thái Chờ phân ca trên hệ thống."}
+            </p>
+          ) : (
+              <div className="max-h-[260px] overflow-y-auto pr-1">
+                <div className="flex flex-col gap-2.5">
                   {waitingLeaves.map((leave) => {
                     const isSelected = selectedWaitingLeaveIds.includes(leave.id);
                     return (
                       <div 
                         key={leave.id} 
-                        className={`p-2.5 rounded-lg border text-[12px] flex items-start gap-2.5 transition-all cursor-pointer ${
+                        className={`p-3 rounded-lg border text-[13px] sm:text-[13.5px] flex items-start gap-3 transition-all cursor-pointer ${
                           isSelected ? 'border-[var(--acc)] bg-cyan-50/90 shadow-sm ring-1 ring-[var(--acc)]' : 'border-slate-200 bg-white hover:border-slate-300 shadow-sm'
                         }`}
                         onClick={() => {
@@ -1503,30 +1998,30 @@ export default function App() {
                           type="checkbox" 
                           checked={isSelected}
                           onChange={() => {}} // handled by parent div click
-                          className="mt-0.5 accent-[var(--acc)] cursor-pointer"
+                          className="mt-1 w-4 h-4 accent-[var(--acc)] cursor-pointer flex-shrink-0"
                         />
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-bold text-slate-950 text-[13px]">{leave.name}</span>
-                            <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
-                              <span className="text-[10px] bg-yellow-100 text-yellow-800 border border-yellow-200 px-1.5 py-0.5 rounded-md font-mono font-medium">{leave.id.substring(0, 14)}...</span>
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span className="font-extrabold text-slate-950 text-[14px] sm:text-[15px]">{leave.name}</span>
+                            <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                              <span className="text-[11px] bg-yellow-100 text-yellow-900 border border-yellow-200 px-2 py-0.5 rounded-md font-mono font-semibold">{leave.id.substring(0, 16)}...</span>
                               <button 
-                                className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                                className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
                                 title="Xóa đơn này"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleDeleteWaitingLeaves([leave.id], leave.name);
                                 }}
                               >
-                                <Trash2 size={13} className="text-slate-400 hover:text-red-600 transition-colors" />
+                                <Trash2 size={14} className="text-slate-400 hover:text-red-600 transition-colors" />
                               </button>
                             </div>
                           </div>
-                          <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-1 text-slate-500">
-                            <div>Kíp: <span className="font-semibold text-slate-800">Kíp {leave.kip}</span></div>
-                            <div>Chức danh: <span className="font-semibold text-slate-800">{leave.chucDanh}</span></div>
-                            <div className="col-span-2">Thời gian: <span className="font-semibold text-slate-800">{fmtVN(new Date(leave.startDate))} → {fmtVN(new Date(leave.endDate))}</span></div>
-                            <div className="col-span-2">Lý do: <span className="font-semibold text-slate-800 truncate block" title={leave.reason}>{leave.reason}</span></div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 mt-1.5 text-[13px] sm:text-[13.5px] text-slate-600">
+                            <div>Kíp: <span className="font-bold text-slate-900">Kíp {leave.kip}</span></div>
+                            <div>Chức danh: <span className="font-bold text-slate-900">{leave.chucDanh}</span></div>
+                            <div className="sm:col-span-2">Thời gian: <span className="font-bold text-slate-900">{fmtVN(new Date(leave.startDate))} → {fmtVN(new Date(leave.endDate))}</span></div>
+                            <div className="sm:col-span-2">Lý do: <span className="font-bold text-slate-900 truncate block" title={leave.reason}>{leave.reason}</span></div>
                           </div>
                         </div>
                       </div>
@@ -1535,9 +2030,8 @@ export default function App() {
                 </div>
               </div>
             )}
-            <p className="text-[10px] text-var(--txt2) mt-2 italic">* Chọn các đơn muốn xếp lịch và bấm "Áp dụng ... người" để tự động điền nhanh các thông tin.</p>
+            <p className="text-[12px] text-var(--txt2) mt-2.5 italic">* Chọn các đơn muốn xếp lịch và bấm "Áp dụng ... người" để tự động điền nhanh các thông tin.</p>
           </div>
-        )}
 
         <div className="g2">
           <div className="field">
@@ -1550,9 +2044,12 @@ export default function App() {
           </div>
           <div className="field">
             <label>Chức danh người nghỉ</label>
-            <select value={chucDanh} onChange={e => setChucDanh(e.target.value)}>
+            <select value={chucDanh} onChange={e => setChucDanh(e.target.value.trim())}>
               <option value="">-- Chọn chức danh --</option>
-              {staffData.map(r => <option key={r[0]} value={r[0]}>{r[0]}</option>)}
+              {staffData.map(r => {
+                const title = (r[0] || '').trim();
+                return <option key={title} value={title}>{title}</option>;
+              })}
             </select>
           </div>
           <div className="field">
@@ -1582,9 +2079,12 @@ export default function App() {
               <div className="g2">
                 <div className="field">
                   <label>Chức danh</label>
-                  <select value={leave.chucDanh} onChange={e => updateConcurrentLeave(idx, 'chucDanh', e.target.value)}>
+                  <select value={leave.chucDanh} onChange={e => updateConcurrentLeave(idx, 'chucDanh', e.target.value.trim())}>
                     <option value="">-- Chức danh --</option>
-                    {staffData.map(r => <option key={r[0]} value={r[0]}>{r[0]}</option>)}
+                    {staffData.map(r => {
+                      const title = (r[0] || '').trim();
+                      return <option key={title} value={title}>{title}</option>;
+                    })}
                   </select>
                 </div>
                 <div className="field">
@@ -1624,10 +2124,14 @@ export default function App() {
           <div className="field">
             <label>Chức danh</label>
             <select value={swapChucDanh} onChange={e => {
-              setSwapChucDanh(e.target.value);
+              const cd = e.target.value.trim();
+              setSwapChucDanh(cd);
               setSwapData({...swapData, person1: '', person2: ''});
             }}>
-              {staffData.map(r => <option key={r[0]} value={r[0]}>{r[0]}</option>)}
+              {staffData.map(r => {
+                const title = (r[0] || '').trim();
+                return <option key={title} value={title}>{title}</option>;
+              })}
             </select>
           </div>
           <div className="field"></div>
@@ -1668,7 +2172,7 @@ export default function App() {
             />
           </div>
           <datalist id="staff-list">
-            {staffData.find(r => r[0] === swapChucDanh)?.slice(1).filter(Boolean).map(name => (
+            {staffData.find(r => r[0] && r[0].trim().toLowerCase() === (swapChucDanh || '').trim().toLowerCase())?.slice(1).filter(Boolean).map(name => (
               <option key={name} value={name} />
             ))}
           </datalist>
@@ -1702,17 +2206,220 @@ export default function App() {
       </div>
       )}
 
-      {activeTab === 'staff' && (
+      {activeTab === 'lookup' && (
+        <div className="card w-full p-0 overflow-hidden min-h-[750px] shadow-sm border border-slate-200 rounded-2xl bg-white" id="info-lookup-card">
+          <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">🔍</span>
+              <h2 className="font-bold text-slate-800 text-base">Tra cứu thông tin & Thỏa ước lao động tập thể</h2>
+            </div>
+            <span className="text-xs text-slate-500 font-medium bg-slate-200/80 px-2.5 py-1 rounded-full">Trợ lý AI Trực tuyến</span>
+          </div>
+          <div className="w-full h-[720px]">
+            <iframe
+              src="https://dothanhphongpc1.tail1ac872.ts.net/chatbot/PMzknllbIHSxw2FT"
+              className="w-full h-full border-0"
+              title="Tra cứu thông tin"
+              allow="microphone; clipboard-read; clipboard-write"
+            />
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'auth' && (
+        <div className="w-full max-w-2xl mx-auto space-y-6 my-6 px-4">
+          {/* Card 1: Thông tin tài khoản */}
+          <div className="card w-full p-6 bg-white border border-slate-200 rounded-2xl shadow-md" id="account-info-card">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-teal-600 text-white flex items-center justify-center font-bold text-lg shadow-md">
+                  👤
+                </div>
+                <div>
+                  <h2 className="text-lg font-black text-slate-800">{user.fullName}</h2>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-xs text-slate-500 font-mono">@{user.username}</span>
+                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md ${
+                      user.role === 'super_admin'
+                        ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                        : user.role === 'workshop_admin'
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : 'bg-slate-100 text-slate-700 border border-slate-200'
+                    }`}>
+                      {user.role === 'super_admin' ? 'Super Admin (Admin Tổng)' : user.role === 'workshop_admin' ? 'Admin Phân Xưởng' : 'Tài Khoản Phân Xưởng'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={handleLogout}
+                className="flex items-center gap-2 px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm active:scale-95"
+              >
+                <span>🚪 Đăng xuất</span>
+              </button>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/80">
+                <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">
+                  Phân xưởng hoạt động
+                </label>
+                {workshops.length > 1 && (user.role === 'super_admin' || user.workshopId === 'all') ? (
+                  <select
+                    value={activeWorkshop?.id || ''}
+                    onChange={(e) => {
+                      const found = workshops.find(w => w.id === e.target.value);
+                      if (found) handleSelectWorkshop(found);
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                  >
+                    {workshops.map(ws => (
+                      <option key={ws.id} value={ws.id}>
+                        {ws.name} ({ws.code})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="font-bold text-emerald-800 text-sm bg-emerald-50 px-3 py-2 rounded-xl border border-emerald-200">
+                    {activeWorkshop ? activeWorkshop.name : 'Phân xưởng Vận hành Ialy'}
+                  </div>
+                )}
+              </div>
+
+              {isAdmin && (
+                <div className="pt-2">
+                  <button
+                    onClick={() => setShowWorkshopManager(true)}
+                    className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-black rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-98"
+                  >
+                    <Settings size={18} />
+                    <span>Quản lý Phân xưởng & Cấu hình Hệ thống</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Card 2: Đổi mật khẩu */}
+          <div className="card w-full bg-white border border-slate-200 rounded-2xl shadow-md overflow-hidden transition-all" id="change-password-card">
+            <button
+              type="button"
+              onClick={() => setShowChangePwForm(!showChangePwForm)}
+              className="w-full p-5 flex items-center justify-between bg-white hover:bg-slate-50/80 transition-colors text-left cursor-pointer"
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-xl p-2 bg-amber-50 text-amber-600 rounded-xl border border-amber-200/60">🔐</span>
+                <div>
+                  <h3 className="text-base font-black text-slate-800">Thay đổi mật khẩu tài khoản</h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {showChangePwForm ? 'Nhấn để ẩn biểu mẫu' : 'Bấm vào đây để mở khung đổi mật khẩu tài khoản'}
+                  </p>
+                </div>
+              </div>
+              <span className={`px-3.5 py-1.5 rounded-xl text-xs font-extrabold transition-all ${
+                showChangePwForm 
+                  ? 'bg-slate-100 text-slate-700 border border-slate-200' 
+                  : 'bg-teal-50 text-teal-700 border border-teal-200 hover:bg-teal-100'
+              }`}>
+                {showChangePwForm ? 'Thu gọn ▲' : 'Đổi mật khẩu ▼'}
+              </span>
+            </button>
+
+            {showChangePwForm && (
+              <form onSubmit={handleChangePassword} className="p-6 pt-4 space-y-4 border-t border-slate-100 bg-slate-50/50 animate-in fade-in duration-150">
+                {changePwMsg && (
+                  <div className={`p-3.5 rounded-xl text-xs font-bold border ${
+                    changePwMsg.type === 'success' 
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                      : 'bg-rose-50 text-rose-800 border-rose-200'
+                  }`}>
+                    {changePwMsg.type === 'success' ? '✅ ' : '⚠️ '}{changePwMsg.text}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Mật khẩu hiện tại <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={oldPasswordInput}
+                    onChange={(e) => setOldPasswordInput(e.target.value)}
+                    placeholder="Nhập mật khẩu hiện tại"
+                    required
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Mật khẩu mới <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={newPasswordInput}
+                    onChange={(e) => setNewPasswordInput(e.target.value)}
+                    placeholder="Nhập mật khẩu mới (ít nhất 4 ký tự)"
+                    required
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Xác nhận mật khẩu mới <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={confirmNewPasswordInput}
+                    onChange={(e) => setConfirmNewPasswordInput(e.target.value)}
+                    placeholder="Xác nhận lại mật khẩu mới"
+                    required
+                    className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 transition-all"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={changePwLoading}
+                  className="w-full py-3 px-4 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-98"
+                >
+                  {changePwLoading ? (
+                    <span>Đang cập nhật...</span>
+                  ) : (
+                    <span>💾 Cập nhật mật khẩu</span>
+                  )}
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'staff' && isAdmin && (
         <div className="flex flex-col gap-6 w-full">
           <div className="card" id="staff-roster-card">
             <div className="ctitle">
               Nhân sự của kíp 
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap items-center">
+                <button 
+                  className="px-3 py-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                  onClick={handleSyncStaffLeavesToSheets} 
+                  disabled={isSyncingLeaves}
+                  title="Khởi tạo danh sách nhân sự và số ngày phép lên Google Sheet"
+                >
+                  <RefreshCw size={13} className={isSyncingLeaves ? 'animate-spin' : ''} />
+                  <span>{isSyncingLeaves ? '⏳ Đang khởi tạo...' : '🌴 Khởi tạo Sheet Phép Năm'}</span>
+                </button>
                 <button className="staff-toggle" onClick={() => setShowStaff(!showStaff)}>
                   {showStaff ? 'Thu gọn ▲' : 'Chỉnh sửa ▼'}
                 </button>
                 <button className="staff-toggle" onClick={() => setShowSignatureManager(!showSignatureManager)}>
                   {showSignatureManager ? '✍️ Ẩn chữ ký' : '✍️ Quản lý chữ ký'}
+                </button>
+                <button className="staff-toggle" onClick={() => setShowWorkshopManager(true)}>
+                  📊 Quản lý & Excel
                 </button>
               </div>
             </div>
@@ -1729,75 +2436,166 @@ export default function App() {
             )}
 
             {showStaff && (
-              <div className="staff-wrap">
-                <table className="st">
-                  <thead>
-                    <tr>
-                      <th>Chức danh</th>
-                      <th>Kíp 1</th>
-                      <th>Kíp 2</th>
-                      <th>Kíp 3</th>
-                      <th>Kíp 4</th>
-                      <th>Kíp 5</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {staffData.map((row, r) => (
-                      <tr key={r}>
-                        <td>{row[0]}</td>
-                        {[1, 2, 3, 4, 5].map(c => (
-                          <td key={c}>
-                            <input 
-                              value={row[c] || ''} 
-                              onChange={e => handleUpdateStaff(r, c, e.target.value)}
-                            />
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="pt-2">
+                <StaffDataEditor
+                  staffDataText={JSON.stringify(staffData, null, 2)}
+                  onChangeStaffDataText={(text) => {
+                    try {
+                      const parsed = JSON.parse(text);
+                      if (Array.isArray(parsed)) {
+                        setStaffData(parsed);
+                        localStorage.setItem('sd', JSON.stringify(parsed));
+                      }
+                    } catch (e) {}
+                  }}
+                  teamsListText={activeWorkshop?.config?.shiftSchedule?.teams?.join(', ') || 'Kíp 1, Kíp 2, Kíp 3, Kíp 4, Kíp 5'}
+                  onSyncLeaves={handleSyncStaffLeavesToSheets}
+                  isSyncingLeaves={isSyncingLeaves}
+                />
               </div>
             )}
           </div>
 
-          <div className="card" id="system-config-card">
-            <div className="ctitle">Cấu hình hệ thống</div>
-            <p className="text-[13px] text-var(--txt2) mb-4">Điều chỉnh thông tin ký số văn bản và tích hợp thông báo Zalo cá nhân.</p>
-            <div className="g2">
-              <div className="field">
-                <label>Người ký văn bản</label>
-                <input 
-                  type="text" 
-                  value={config.nguoiKy || ''} 
-                  onChange={e => setConfig({ ...config, nguoiKy: e.target.value })} 
-                  placeholder="Họ và tên người ký"
-                />
-              </div>
-              <div className="field">
-                <label>Số văn bản mặc định</label>
-                <input 
-                  type="text" 
-                  value={config.soVanBan || ''} 
-                  onChange={e => setConfig({ ...config, soVanBan: e.target.value })} 
-                  placeholder="Ví dụ: 123"
-                />
-              </div>
-              <div className="field col-span-2">
-                <label>Zalo Webhook URL nhận thông báo</label>
-                <input 
-                  type="text" 
-                  value={config.zaloWebhookUrl || ''} 
-                  onChange={e => setConfig({ ...config, zaloWebhookUrl: e.target.value })} 
-                  placeholder="https://..."
-                  className="font-mono text-[12.5px] w-full px-3 py-2 border rounded-md"
-                />
-                <span className="text-[11px] text-var(--txt2) italic mt-1.5 block">
-                  * Hệ thống sẽ tự động gửi thông báo về Zalo cá nhân qua đường dẫn webhook này khi có đơn nghỉ phép mới được tạo hoặc lưu lên hệ thống chờ phân ca.
-                </span>
+          <div className="mt-4 flex justify-end">
+            <button 
+              type="button"
+              onClick={() => setShowSystemConfig(!showSystemConfig)}
+              className="text-xs text-slate-500 hover:text-slate-800 flex items-center gap-1.5 font-medium px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition-all cursor-pointer shadow-xs"
+            >
+              ⚙️ {showSystemConfig ? 'Ẩn cấu hình hệ thống' : 'Cấu hình hệ thống'}
+            </button>
+          </div>
+
+          {showSystemConfig && (
+            <div className="card mt-3" id="system-config-card">
+              <div className="ctitle">Cấu hình hệ thống</div>
+              <p className="text-[13px] text-var(--txt2) mb-4">Điều chỉnh thông tin ký số văn bản và tích hợp thông báo Zalo cá nhân.</p>
+              <div className="g2">
+                <div className="field">
+                  <label>Người ký văn bản</label>
+                  <input 
+                    type="text" 
+                    value={config.nguoiKy || ''} 
+                    onChange={e => setConfig({ ...config, nguoiKy: e.target.value })} 
+                    placeholder="Họ và tên người ký"
+                  />
+                </div>
+                <div className="field">
+                  <label>Số văn bản mặc định</label>
+                  <input 
+                    type="text" 
+                    value={config.soVanBan || ''} 
+                    onChange={e => setConfig({ ...config, soVanBan: e.target.value })} 
+                    placeholder="Ví dụ: 123/PX"
+                  />
+                </div>
+                <div className="field">
+                  <label>Hậu tố ký hiệu văn bản</label>
+                  <input 
+                    type="text" 
+                    value={config.documentCodeSuffix || ''} 
+                    onChange={e => setConfig({ ...config, documentCodeSuffix: e.target.value })} 
+                    placeholder="Ví dụ: /VHIALY hoặc /VHPLK"
+                  />
+                </div>
+                <div className="field">
+                  <label>Tên Phân xưởng trên văn bản</label>
+                  <input 
+                    type="text" 
+                    value={config.headerWorkshopName || ''} 
+                    onChange={e => setConfig({ ...config, headerWorkshopName: e.target.value })} 
+                    placeholder="Ví dụ: PHÂN XƯỞNG VẬN HÀNH IALY"
+                  />
+                </div>
+                <div className="field">
+                  <label>Tên Công ty / Đơn vị</label>
+                  <input 
+                    type="text" 
+                    value={config.companyName || ''} 
+                    onChange={e => setConfig({ ...config, companyName: e.target.value })} 
+                    placeholder="Ví dụ: CÔNG TY THỦY ĐIỆN IALY"
+                  />
+                </div>
+                <div className="field">
+                  <label>Địa điểm / Tỉnh thành (Xuất văn bản)</label>
+                  <input 
+                    type="text" 
+                    value={config.locationName || ''} 
+                    onChange={e => setConfig({ ...config, locationName: e.target.value })} 
+                    placeholder="Ví dụ: Gia Lai, Kon Tum, Đắk Lắk..."
+                  />
+                </div>
+                <div className="field col-span-2">
+                  <label>Zalo Webhook URL nhận thông báo</label>
+                  <input 
+                    type="text" 
+                    value={config.zaloWebhookUrl || ''} 
+                    onChange={e => setConfig({ ...config, zaloWebhookUrl: e.target.value })} 
+                    placeholder="https://..."
+                    className="font-mono text-[12.5px] w-full px-3 py-2 border rounded-md"
+                  />
+                  <span className="text-[11px] text-var(--txt2) italic mt-1.5 block">
+                    * Hệ thống sẽ tự động gửi thông báo về Zalo cá nhân qua đường dẫn webhook này khi có đơn nghỉ phép mới được tạo hoặc lưu lên hệ thống chờ phân ca.
+                  </span>
+                </div>
+
+                <div className="field col-span-2 p-3.5 bg-emerald-50/50 border border-emerald-200/80 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="font-bold text-slate-800 text-xs uppercase tracking-wider text-emerald-800">
+                      📊 Link Google Sheet (Lưu Lịch Sử & Tra Cứu Số Ngày Phép)
+                    </label>
+                    <a 
+                      href={config.googleSheetUrl || 'https://docs.google.com/spreadsheets/d/1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ/edit?gid=0#gid=0'} 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      className="text-[11px] text-emerald-700 hover:underline flex items-center gap-1 font-semibold"
+                    >
+                      🔗 Mở Google Sheet
+                    </a>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input 
+                      type="text" 
+                      value={config.googleSheetUrl || ''} 
+                      onChange={e => setConfig({ ...config, googleSheetUrl: e.target.value })} 
+                      placeholder="https://docs.google.com/spreadsheets/d/1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ/edit"
+                      className="font-mono text-[12px] flex-1 px-3 py-2 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSyncStaffLeavesToSheets}
+                      disabled={isSyncingLeaves}
+                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs whitespace-nowrap flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 transition-all shadow-sm"
+                      title="Khởi tạo sẵn danh sách nhân viên và 12 ngày phép/năm lên sheet 'Số ngày phép'"
+                    >
+                      {isSyncingLeaves ? '⏳ Đang khởi tạo...' : '🔄 Khởi tạo sheet Số ngày phép'}
+                    </button>
+                  </div>
+                  <span className="text-[11px] text-slate-600 italic block leading-relaxed">
+                    * Nếu để trống, hệ thống sẽ mặc định lưu và tra cứu tại: <code className="bg-white px-1 py-0.5 rounded border border-slate-200 text-emerald-800 font-mono">https://docs.google.com/spreadsheets/d/1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ/edit</code>. Khi bạn dán link Google Sheet riêng của mình, lịch sử nghỉ phép và tra cứu số ngày phép sẽ được lưu trữ trực tiếp vào sheet đó.
+                  </span>
+                </div>
+
+                <div className="col-span-2 flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-200 mt-2">
+                  <div className="text-xs font-semibold">
+                    {configSaveMsg && (
+                      <span className={configSaveMsg.startsWith('✅') ? 'text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200' : 'text-rose-700 bg-rose-50 px-3 py-1.5 rounded-lg border border-rose-200'}>
+                        {configSaveMsg}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSaveSystemConfig}
+                    disabled={isSavingConfig}
+                    className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center gap-2 shadow-sm transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {isSavingConfig ? '⏳ Đang lưu...' : '💾 Lưu Cấu Hình Hệ Thống'}
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -2036,7 +2834,7 @@ export default function App() {
                 <>
                   <button 
                     className={`btn ${isSavingLeaveToSheets ? 'bg-gray-400 cursor-wait' : 'bg-[#34a853] text-white hover:bg-[#2c8e46] cursor-pointer'} font-medium rounded-lg px-4 py-2 text-sm flex items-center justify-center gap-1.5`}
-                    onClick={saveLeaveToGoogleSheets}
+                    onClick={() => saveLeaveToGoogleSheets(true)}
                     disabled={isSavingLeaveToSheets || !leaveData.name}
                   >
                     {isSavingLeaveToSheets ? <span className="spin spinw mr-2"></span> : '☁️ '}
@@ -2137,7 +2935,7 @@ export default function App() {
       <div className="max-w-[1200px] mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
         <div className="flex flex-col gap-2.5 text-center md:text-left">
           <div className="text-[13px] md:text-[14px] text-white font-bold tracking-wide">
-            Hệ thống tự dộng tạo lịch trực thay ca vận hành nghỉ phép VHIALY
+            Hệ thống tự động tạo lịch trực thay ca vận hành nghỉ phép VHIALY
           </div>
           <div className="text-[12.5px] text-slate-300 leading-relaxed font-medium">
             Trang thông tin hỗ trợ nội bộ trực thuộc <a href="https://ialyhpc.vn" target="_blank" rel="noopener noreferrer" className="underline hover:text-white transition-colors">Công ty Thủy Điện Ialy</a>
@@ -2150,23 +2948,35 @@ export default function App() {
             <span className="underline cursor-pointer hover:text-white transition-colors">Hỗ trợ kỹ thuật </span>
           </div>
         </div>
-
-        {/* Top scroll button exactly like the screenshot layout */}
-        <div className="flex items-center">
-          <button 
-            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} 
-            className="flex items-center bg-white text-slate-800 rounded-full pl-1.5 pr-4 py-1.5 transition-all outline-none border border-slate-200 cursor-pointer shadow-md hover:bg-slate-50 hover:shadow-lg active:scale-95 duration-150"
-          >
-            <span className="h-8 w-8 bg-[#00adef] text-white font-bold rounded-full flex items-center justify-center mr-2.5 shadow-sm leading-none text-base">
-              ↑
-            </span>
-            <span className="text-[13px] font-extrabold tracking-wider uppercase text-[#05203c] underline decoration-[#00adef] decoration-2">
-              Top
-            </span>
-          </button>
-        </div>
       </div>
     </footer>
+
+    {/* Floating Top scroll button when scrolled down */}
+    {showTopBtn && (
+      <button 
+        onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} 
+        className="fixed bottom-6 right-6 z-50 flex items-center bg-white text-slate-800 rounded-full pl-1.5 pr-4 py-1.5 transition-all duration-200 outline-none border border-slate-200 cursor-pointer shadow-xl hover:bg-slate-50 hover:shadow-2xl hover:scale-105 active:scale-95 animate-fade-in"
+        title="Về đầu trang"
+      >
+        <span className="h-8 w-8 bg-[#00adef] text-white font-bold rounded-full flex items-center justify-center mr-2.5 shadow-sm leading-none text-base">
+          ↑
+        </span>
+        <span className="text-[13px] font-extrabold tracking-wider uppercase text-[#05203c] underline decoration-[#00adef] decoration-2">
+          Top
+        </span>
+      </button>
+    )}
+
+    {/* Workshop & Accounts Management Modal */}
+    {showWorkshopManager && user && (
+      <WorkshopManagerModal
+        user={user}
+        workshops={workshops}
+        activeWorkshop={activeWorkshop}
+        onClose={() => setShowWorkshopManager(false)}
+        onRefreshWorkshops={fetchAuthAndWorkshops}
+      />
+    )}
     </div>
   );
 }

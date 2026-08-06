@@ -2410,7 +2410,7 @@ export default function App() {
                   title="Khởi tạo danh sách nhân sự và số ngày phép lên Google Sheet"
                 >
                   <RefreshCw size={13} className={isSyncingLeaves ? 'animate-spin' : ''} />
-                  <span>{isSyncingLeaves ? '⏳ Đang khởi tạo...' : '🌴 Khởi tạo Sheet Phép Năm'}</span>
+                  <span>{isSyncingLeaves ? '⏳ Đang khởi tạo...' : ' Khởi tạo danh sách số ngày nghỉ phép'}</span>
                 </button>
                 <button className="staff-toggle" onClick={() => setShowStaff(!showStaff)}>
                   {showStaff ? 'Thu gọn ▲' : 'Chỉnh sửa ▼'}

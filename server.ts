@@ -582,7 +582,7 @@ function calculateLeaveBalanceLogic(
         note = `Phép năm cũ đã dùng hết từ Q1. Chỉ còn tính phép năm mới.`;
       }
     } else {
-      note = `Tính theo tiêu chuẩn phép năm mới (${newLeaves} ngày).`;
+      note = `Tính theo tiêu chuẩn phép năm hiện tại (${newLeaves} ngày).`;
     }
   }
 

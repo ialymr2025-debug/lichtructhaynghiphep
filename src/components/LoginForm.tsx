@@ -325,7 +325,7 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
             className="inline-flex items-center gap-2 text-[14px] font-bold text-[#00529c] hover:text-[#003d75] hover:underline cursor-pointer transition-all py-1.5 px-3 rounded-xl hover:bg-slate-50"
           >
             <Sparkles size={16} className="text-amber-500 animate-pulse shrink-0" />
-            <span>Tạo tài khoản Admin Phân xưởng & Thiết lập</span>
+            <span>Tạo tài khoản Admin Phân xưởng </span>
           </button>
         </div>
       </form>

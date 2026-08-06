@@ -1927,12 +1927,7 @@ export default function App() {
 
           <div className="card" id="schedule-planner-card">
         <div className="ctitle">Thông tin nghỉ phép
-        <button
-  className="btn-ex btn-word"
-  onClick={() => window.open("https://script.google.com/macros/s/AKfycbwo8YVh0YbMLg3KSMoULVRG3moktSEodmY-H3ppk1ZJ0iia6hKxC-xkCKi6-WtKlBpG/exec", "_blank")}
->
-  Bảng báo cơm ca
-</button>
+     
 </div>
         {alert && <div className={`alert ${alert.startsWith('✅') ? 'asuc' : 'aerr'}`}>{alert}</div>}
         

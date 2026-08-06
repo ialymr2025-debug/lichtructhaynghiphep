@@ -98,6 +98,94 @@ export default function WorkshopManagerModal({
     return SHIFTS;
   };
 
+  const validateShiftsMatrix = (matrix: string[][]): { isValid: boolean; invalidDaysDetails: { day: number; n: number; c: number; k: number; o: number }[]; message: string } => {
+    if (!Array.isArray(matrix) || matrix.length === 0) {
+      return { isValid: false, invalidDaysDetails: [], message: 'Ma trận ca làm việc trống hoặc không đúng định dạng.' };
+    }
+
+    const numTeams = matrix.length;
+    const numDays = matrix[0]?.length || 0;
+    if (numDays === 0) {
+      return { isValid: false, invalidDaysDetails: [], message: 'Ma trận ca làm việc chưa có cột ngày nào.' };
+    }
+
+    const invalidDaysDetails: { day: number; n: number; c: number; k: number; o: number }[] = [];
+
+    for (let d = 0; d < numDays; d++) {
+      let n = 0, c = 0, k = 0, o = 0;
+      for (let row = 0; row < numTeams; row++) {
+        const val = (matrix[row]?.[d] || '').toUpperCase().trim();
+        if (val === 'N') n++;
+        else if (val === 'C') c++;
+        else if (val === 'K') k++;
+        else if (val === 'O') o++;
+      }
+
+      if (n !== 1 || c !== 1 || k !== 1) {
+        invalidDaysDetails.push({ day: d + 1, n, c, k, o });
+      }
+    }
+
+    if (invalidDaysDetails.length > 0) {
+      const dayStr = invalidDaysDetails.map(item => `Ngày ${item.day} (Hiện có: ${item.n}N, ${item.c}C, ${item.k}K)`).join(', ');
+      return {
+        isValid: false,
+        invalidDaysDetails,
+        message: `Lỗi nhập dữ liệu ma trận ca trực: ${dayStr} bị thiếu hoặc thừa ca N, C, K! Mỗi ngày của ${numTeams} kíp phải có đúng 1 ca N, 1 ca C, 1 ca K (và ${numTeams - 3} ca O). Yêu cầu kiểm tra và nhập lại.`
+      };
+    }
+
+    return { isValid: true, invalidDaysDetails: [], message: '' };
+  };
+
+  const validateRulesMatrix = (
+    rulesObj: any,
+    numTeams: number = 5
+  ): { isValid: boolean; invalidRulesDetails: string[]; message: string } => {
+    if (!rulesObj || typeof rulesObj !== 'object') {
+      return {
+        isValid: false,
+        invalidRulesDetails: ['Toàn bộ quy luật trực thay bị trống hoặc không hợp lệ.'],
+        message: 'Lỗi nhập quy luật trực thay tự động: Bảng quy luật bị trống hoặc không đúng định dạng!'
+      };
+    }
+
+    const invalidRulesDetails: string[] = [];
+    const shiftLabels: Record<string, string> = {
+      N: 'Ca Ngày (N)',
+      C: 'Ca Chiều (C)',
+      K: 'Ca Đêm (K)'
+    };
+
+    const totalTeams = Math.max(numTeams || 5, 5);
+
+    for (let kNum = 1; kNum <= totalTeams; kNum++) {
+      const kipRule = rulesObj[kNum] || rulesObj[String(kNum)];
+      if (!kipRule || typeof kipRule !== 'object') {
+        invalidRulesDetails.push(`Kíp ${kNum} (Trống cả 3 ca N, C, K)`);
+        continue;
+      }
+
+      ['N', 'C', 'K'].forEach((shiftType) => {
+        const targetVal = kipRule[shiftType]?.k;
+        if (!targetVal || typeof targetVal !== 'number' || targetVal <= 0) {
+          invalidRulesDetails.push(`Kíp ${kNum} (${shiftLabels[shiftType] || shiftType})`);
+        }
+      });
+    }
+
+    if (invalidRulesDetails.length > 0) {
+      const detailsStr = invalidRulesDetails.join(', ');
+      return {
+        isValid: false,
+        invalidRulesDetails,
+        message: `Lỗi nhập quy luật trực thay tự động: Chưa chọn kíp đi thay ở [${detailsStr}]! Tất cả các ca nghỉ (N, C, K) phải chọn kíp đi thay đầy đủ, không được để trống.`
+      };
+    }
+
+    return { isValid: true, invalidRulesDetails: [], message: '' };
+  };
+
   const getParsedRules = (): Record<number, Record<string, { k: number }>> => {
     try {
       const obj = JSON.parse(rulesMatrixText);
@@ -311,9 +399,22 @@ export default function WorkshopManagerModal({
         }
 
         if (updateMsgs.length > 0) {
+          let extraWarn = '';
+          if (parsedShifts) {
+            const shiftVal = validateShiftsMatrix(parsedShifts);
+            if (!shiftVal.isValid) {
+              extraWarn += ` ⚠️ CHÚ Ý CA TRỰC: ${shiftVal.message}`;
+            }
+          }
+          if (parsedRules) {
+            const ruleVal = validateRulesMatrix(parsedRules, parsedShifts ? parsedShifts.length : 5);
+            if (!ruleVal.isValid) {
+              extraWarn += ` ⚠️ CHÚ Ý QUY LUẬT: ${ruleVal.message}`;
+            }
+          }
           setMatrixUploadNotice({
-            type: 'success',
-            text: `✅ Đã tự động cập nhật ${updateMsgs.join(' và ')} từ file Excel thành công!`
+            type: extraWarn ? 'error' : 'success',
+            text: `✅ Đã tự động cập nhật ${updateMsgs.join(' và ')} từ file Excel!${extraWarn}`
           });
         } else {
           setMatrixUploadNotice({
@@ -653,6 +754,12 @@ export default function WorkshopManagerModal({
       return;
     }
 
+    const shiftValidation = validateShiftsMatrix(parsedShifts);
+    if (!shiftValidation.isValid) {
+      setMsg({ type: 'error', text: shiftValidation.message });
+      return;
+    }
+
     let parsedRules: Record<number, Record<string, { k: number }>> = RULES;
     try {
       if (rulesMatrixText.trim()) {
@@ -660,6 +767,12 @@ export default function WorkshopManagerModal({
       }
     } catch (e: any) {
       setMsg({ type: 'error', text: 'Bảng quy luật kíp trực thay (RULES) không hợp lệ dạng JSON.' });
+      return;
+    }
+
+    const ruleValidation = validateRulesMatrix(parsedRules, parsedShifts.length || 5);
+    if (!ruleValidation.isValid) {
+      setMsg({ type: 'error', text: ruleValidation.message });
       return;
     }
 
@@ -1969,8 +2082,63 @@ export default function WorkshopManagerModal({
                                 </tr>
                               ))}
                             </tbody>
+                            <tfoot>
+                              <tr className="bg-slate-50 border-t-2 border-slate-200 text-[11px] font-bold">
+                                <td className="p-2.5 text-slate-700 bg-slate-100/80">Kiểm tra ca / ngày</td>
+                                {Array.from({ length: getParsedShifts()[0]?.length || 5 }).map((_, dIdx) => {
+                                  const currentShifts = getParsedShifts();
+                                  let n = 0, c = 0, k = 0, o = 0;
+                                  currentShifts.forEach(row => {
+                                    const val = (row[dIdx] || '').toUpperCase().trim();
+                                    if (val === 'N') n++;
+                                    else if (val === 'C') c++;
+                                    else if (val === 'K') k++;
+                                    else if (val === 'O') o++;
+                                  });
+
+                                  const isOk = (n === 1 && c === 1 && k === 1);
+                                  return (
+                                    <td key={dIdx} className="p-2 text-center">
+                                      {isOk ? (
+                                        <span className="inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold text-[10px]" title="Đủ 1N, 1C, 1K">
+                                          <Check size={12} /> 1N-1C-1K
+                                        </span>
+                                      ) : (
+                                        <span className="inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-md bg-rose-100 text-rose-800 border border-rose-300 font-bold text-[10px]" title={`Thừa/thiếu ca! Hiện có: ${n}N, ${c}C, ${k}K, ${o}O`}>
+                                          <AlertCircle size={12} /> Lỗi (N:{n} C:{c} K:{k})
+                                        </span>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            </tfoot>
                           </table>
                         </div>
+
+                        {/* Validation Banner */}
+                        {(() => {
+                          const currentVal = validateShiftsMatrix(getParsedShifts());
+                          if (currentVal.isValid) {
+                            return (
+                              <div className="mt-2.5 p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold flex items-center gap-2">
+                                <Check size={16} className="text-emerald-600 shrink-0" />
+                                <span>Ma trận ca trực hợp lệ: Mỗi ngày đều có đúng <b>1 ca N, 1 ca C, 1 ca K</b> (và {getParsedShifts().length - 3} ca O).</span>
+                              </div>
+                            );
+                          } else {
+                            return (
+                              <div className="mt-2.5 p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-medium space-y-1">
+                                <div className="flex items-center gap-1.5 font-bold text-rose-900 text-xs">
+                                  <AlertCircle size={16} className="text-rose-600 shrink-0" />
+                                  <span>Cảnh báo lỗi nhập ma trận ca trực:</span>
+                                </div>
+                                <p className="text-[11px] leading-relaxed font-semibold">{currentVal.message}</p>
+                              </div>
+                            );
+                          }
+                        })()}
+
                         <div className="flex flex-wrap items-center gap-2 mt-2 text-[11px] text-slate-600">
                           <span className="font-semibold">Chú giải ca:</span>
                           <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">N: Ca Ngày</span>
@@ -2001,8 +2169,11 @@ export default function WorkshopManagerModal({
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-2.5">
-                          {[1, 2, 3, 4, 5].map((kipNum) => {
-                            const kipRule = getParsedRules()[kipNum] || { N: { k: 1 }, C: { k: 2 }, K: { k: 3 } };
+                          {Array.from({ length: Math.max(getParsedShifts().length || 5, 5) }, (_, i) => i + 1).map((kipNum) => {
+                            const rawRules = getParsedRules();
+                            const kipRule = rawRules[kipNum] || rawRules[String(kipNum)] || {};
+                            const availableTeams = Array.from({ length: Math.max(getParsedShifts().length || 5, 5) }, (_, i) => i + 1);
+
                             return (
                               <div key={kipNum} className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
                                 <div className="font-bold text-slate-900 text-xs pb-1 border-b border-slate-200 flex items-center justify-between">
@@ -2015,11 +2186,14 @@ export default function WorkshopManagerModal({
                                     Nghỉ Ca <span className="font-bold text-emerald-700">Ngày (N)</span>:
                                   </label>
                                   <select
-                                    value={kipRule.N?.k || 1}
-                                    onChange={(e) => handleRuleChange(kipNum, 'N', Number(e.target.value))}
-                                    className="w-full px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-800 focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                                    value={kipRule.N?.k || ''}
+                                    onChange={(e) => handleRuleChange(kipNum, 'N', e.target.value ? Number(e.target.value) : 0)}
+                                    className={`w-full px-2 py-1 bg-white border rounded-lg text-xs font-semibold focus:ring-1 focus:ring-emerald-500 cursor-pointer ${
+                                      !kipRule.N?.k ? 'border-rose-400 bg-rose-50 text-rose-700 font-bold' : 'border-slate-300 text-slate-800'
+                                    }`}
                                   >
-                                    {[1, 2, 3, 4, 5].map((k) => (
+                                    <option value="">-- Chưa chọn kíp thay --</option>
+                                    {availableTeams.map((k) => (
                                       <option key={k} value={k}>
                                         Kíp {k} thay
                                       </option>
@@ -2033,11 +2207,14 @@ export default function WorkshopManagerModal({
                                     Nghỉ Ca <span className="font-bold text-amber-700">Chiều (C)</span>:
                                   </label>
                                   <select
-                                    value={kipRule.C?.k || 1}
-                                    onChange={(e) => handleRuleChange(kipNum, 'C', Number(e.target.value))}
-                                    className="w-full px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-800 focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                                    value={kipRule.C?.k || ''}
+                                    onChange={(e) => handleRuleChange(kipNum, 'C', e.target.value ? Number(e.target.value) : 0)}
+                                    className={`w-full px-2 py-1 bg-white border rounded-lg text-xs font-semibold focus:ring-1 focus:ring-emerald-500 cursor-pointer ${
+                                      !kipRule.C?.k ? 'border-rose-400 bg-rose-50 text-rose-700 font-bold' : 'border-slate-300 text-slate-800'
+                                    }`}
                                   >
-                                    {[1, 2, 3, 4, 5].map((k) => (
+                                    <option value="">-- Chưa chọn kíp thay --</option>
+                                    {availableTeams.map((k) => (
                                       <option key={k} value={k}>
                                         Kíp {k} thay
                                       </option>
@@ -2051,11 +2228,14 @@ export default function WorkshopManagerModal({
                                     Nghỉ Ca <span className="font-bold text-indigo-700">Đêm (K)</span>:
                                   </label>
                                   <select
-                                    value={kipRule.K?.k || 1}
-                                    onChange={(e) => handleRuleChange(kipNum, 'K', Number(e.target.value))}
-                                    className="w-full px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-800 focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                                    value={kipRule.K?.k || ''}
+                                    onChange={(e) => handleRuleChange(kipNum, 'K', e.target.value ? Number(e.target.value) : 0)}
+                                    className={`w-full px-2 py-1 bg-white border rounded-lg text-xs font-semibold focus:ring-1 focus:ring-emerald-500 cursor-pointer ${
+                                      !kipRule.K?.k ? 'border-rose-400 bg-rose-50 text-rose-700 font-bold' : 'border-slate-300 text-slate-800'
+                                    }`}
                                   >
-                                    {[1, 2, 3, 4, 5].map((k) => (
+                                    <option value="">-- Chưa chọn kíp thay --</option>
+                                    {availableTeams.map((k) => (
                                       <option key={k} value={k}>
                                         Kíp {k} thay
                                       </option>
@@ -2066,6 +2246,29 @@ export default function WorkshopManagerModal({
                             );
                           })}
                         </div>
+
+                        {/* Rules Validation Banner */}
+                        {(() => {
+                          const currentRulesVal = validateRulesMatrix(getParsedRules(), getParsedShifts().length);
+                          if (currentRulesVal.isValid) {
+                            return (
+                              <div className="mt-2.5 p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold flex items-center gap-2">
+                                <Check size={16} className="text-emerald-600 shrink-0" />
+                                <span>Quy luật phân công trực thay hợp lệ: Tất cả các ca nghỉ (N, C, K) của các Kíp đều đã chọn kíp đi thay đầy đủ.</span>
+                              </div>
+                            );
+                          } else {
+                            return (
+                              <div className="mt-2.5 p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-medium space-y-1">
+                                <div className="flex items-center gap-1.5 font-bold text-rose-900 text-xs">
+                                  <AlertCircle size={16} className="text-rose-600 shrink-0" />
+                                  <span>Cảnh báo lỗi nhập quy luật trực thay tự động:</span>
+                                </div>
+                                <p className="text-[11px] leading-relaxed font-semibold">{currentRulesVal.message}</p>
+                              </div>
+                            );
+                          }
+                        })()}
                       </div>
                     </div>
                   ) : (

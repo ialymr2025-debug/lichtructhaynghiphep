@@ -1626,7 +1626,7 @@ export default function WorkshopManagerModal({
                 </h5>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="block font-medium text-slate-700 mb-1">Tên Tỉnh/Công ty (Dòng trên)</label>
+                    <label className="block font-medium text-slate-700 mb-1">Tên Công ty </label>
                     <input
                       type="text"
                       value={wsCompanyName}
@@ -1637,7 +1637,7 @@ export default function WorkshopManagerModal({
                   </div>
 
                   <div>
-                    <label className="block font-medium text-slate-700 mb-1">Tên Phân xưởng In Tiêu Đề Quốc Hiệu (Dòng dưới)</label>
+                    <label className="block font-medium text-slate-700 mb-1">Tên Phân xưởng In Tiêu Đề Quốc Hiệu </label>
                     <input
                       type="text"
                       value={wsHeaderWorkshopName}
@@ -1648,7 +1648,7 @@ export default function WorkshopManagerModal({
                   </div>
 
                   <div>
-                    <label className="block font-medium text-slate-700 mb-1">Hậu tố Mã Số Văn Bản (VD: /PXSC)</label>
+                    <label className="block font-medium text-slate-700 mb-1">Hậu tố Số Văn Bản (VD: /PXSC)</label>
                     <input
                       type="text"
                       value={wsDocumentCodeSuffix}
@@ -1762,7 +1762,7 @@ export default function WorkshopManagerModal({
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
                   <div>
-                    <label className="block font-medium text-slate-700 mb-1">Danh sách Kíp Trực (phân cách bởi dấu phẩy)</label>
+                    <label className="block font-medium text-slate-700 mb-1">Danh sách Kíp Trực </label>
                     <input
                       type="text"
                       value={teamsListText}
@@ -1799,7 +1799,7 @@ export default function WorkshopManagerModal({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-slate-200/80 mt-2">
                   <div>
                     <label className="block font-semibold text-slate-800 mb-1">
-                      Ngày Gốc Bắt Đầu Chu Kỳ Ca Trực (BASE_DATE) *
+                      Ngày Gốc Bắt Đầu Chu Kỳ Ca Trực *
                     </label>
                     <input
                       type="date"
@@ -1911,7 +1911,7 @@ export default function WorkshopManagerModal({
                         <div className="flex items-center justify-between mb-2">
                           <div>
                             <h6 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
-                              1. Ma Trận Chu Kỳ Ca Trực (SHIFTS)
+                              1. Ma Trận Chu Kỳ Ca Trực 
                             </h6>
                             <p className="text-[11px] text-slate-500">
                               Chọn loại ca trực cho từng Kíp theo các ngày trong chu kỳ.
@@ -1985,7 +1985,7 @@ export default function WorkshopManagerModal({
                         <div className="flex items-center justify-between mb-2">
                           <div>
                             <h6 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
-                              2. Quy Luật Phân Công Trực Thay Tự Động (RULES)
+                              2. Quy Luật Phân Công Trực Thay Tự Động 
                             </h6>
                             <p className="text-[11px] text-slate-500">
                               Chọn Kíp trực thay tương ứng khi một Kíp bất kỳ xin nghỉ ở từng ca (N, C, K).

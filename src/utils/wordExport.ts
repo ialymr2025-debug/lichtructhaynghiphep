@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { fmtVN, abbrev } from './shiftHelpers';
 import { SIGNATURES } from '../constants/signatures';
 
+
 function xe(s: string) {
   return String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -50,6 +51,14 @@ function wimage(rId: string, width: number = 1500000, height: number = 800000) {
 
 function emptyP(spB: number = 0, spA: number = 0) {
   return '<w:p><w:pPr><w:spacing w:before="' + spB + '" w:after="' + spA + '"/></w:pPr></w:p>';
+}
+
+// A signature image is 800000 EMU tall (== 1260 twips, since 1 twip = 635 EMU). When someone
+// has no signature on file yet, this stands in its place so their printed name lines up
+// exactly with everyone else's — an approximate spacing split (e.g. emptyP(150,900)) drifts
+// a bit short in practice and leaves names visibly uneven.
+function sigPlaceholder() {
+  return emptyP(0, 1260);
 }
 
 function makeBorders(solid: boolean) {
@@ -516,7 +525,7 @@ export async function generateWordBlob(currentResult: any, config: any) {
 }
 
 export function buildLeaveRequestDocXml(data: any, config: any, rIds: any = {}) {
-  const { name, birthYear, chucDanh, kip, startDate, endDate, reason, phone, leaveYear, location } = data;
+  const { name, birthYear, chucDanh, kip, startDate, endDate, reason, phone, leaveYear, location, hasLeavePermit } = data;
   const nguoiKy = config.nguoiKy || 'Nguyễn Văn Nghị';
   const chucVuNguoiKy = config.chucVuNguoiKy || 'QUẢN ĐỐC';
   const ngayKyVal = config.ngayKy || '';
@@ -620,16 +629,20 @@ export function buildLeaveRequestDocXml(data: any, config: any, rIds: any = {}) 
     wpara(wrun(`Nay tôi làm đơn này kính đề nghị Lãnh đạo ${recipientWsName}, Phòng Hành chính và Lao động xem xét cho tôi được nghỉ phép với nội dung sau:`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
     wpara(wrun(`Thời gian: Từ ngày ${dfStart} đến hết ngày ${dfEnd}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
     wpara(wrun(`Địa điểm: ${location || locationName}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
-    wpara(wrun(`Lý do: ${reason}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
+    wpara(wrun(`Lý do: ${reason}${hasLeavePermit ? ' (có lấy giấy phép)' : ''}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
     wpara(wrun(`Chế độ phép năm: ${currentYear}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
     wpara(wrun(`Điện thoại liên hệ: ${phone}`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
     wpara(wrun(`Kính mong Lãnh đạo xem xét giải quyết.`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } }),
     wpara(wrun(`Tôi xin chân thành cảm ơn./.`, { size: 28 }), { spBefore: 120, indent: { firstLine: 720 } })
   ].join('');
 
-  const sigWriter = rIds.writer ? wpara(wimage(rIds.writer), { align: 'center' }) : emptyP(150, 0);
-  const sigManager = rIds.manager ? wpara(wimage(rIds.manager), { align: 'center' }) : emptyP(150, 0);
+  const sigWriter = rIds.writer ? wpara(wimage(rIds.writer), { align: 'center' }) : sigPlaceholder();
+  const sigManager = rIds.manager ? wpara(wimage(rIds.manager), { align: 'center' }) : sigPlaceholder();
 
+  // Row 1 holds "Nơi nhận" beside each signer's heading + signature space; row 2 holds
+  // just the two printed names. Putting both names in their own shared row is what keeps
+  // them level — a table row starts all its cells at the same baseline, so it no longer
+  // matters that the manager's blank space and the writer's signature image differ in height.
   const footTbl = wtable([
     wtr([
       wtc({
@@ -641,19 +654,12 @@ export function buildLeaveRequestDocXml(data: any, config: any, rIds: any = {}) 
       wtc({
         w: 3180, borders: false, content:
           wpara(wrun(chucVuNguoiKy.toUpperCase(), { bold: true, size: 28 }), { align: 'center', spBefore: 80 })
+          + sigManager
       }),
       wtc({
         w: 3180, borders: false, content:
           wpara(wrun('NGƯỜI VIẾT ĐƠN', { bold: true, size: 28 }), { align: 'center', spBefore: 80 })
-      })
-    ]),
-    wtr([
-      wtc({ w: 3000, borders: false, content: emptyP() }),
-      wtc({
-        w: 3180, borders: false, content: sigManager
-      }),
-      wtc({
-        w: 3180, borders: false, content: sigWriter
+          + sigWriter
       })
     ]),
     wtr([
@@ -692,7 +698,6 @@ export async function generateLeaveRequestBlob(data: any, config: any, signature
   const imagesToAdd: any = [];
 
   const sigWriter = signaturesOverride?.[name] || SIGNATURES[name];
-  const sigManager = signaturesOverride?.[nguoiKy] || SIGNATURES[nguoiKy];
   const isValidBase64 = (s: string) => s && s.length > 50 && !s.includes("PLACEHOLDER");
 
   if (isValidBase64(sigWriter)) {
@@ -700,10 +705,8 @@ export async function generateLeaveRequestBlob(data: any, config: any, signature
     imagesToAdd.push({ id: 'rIdImg1', data: sigWriter, name: 'sig_writer.png' });
   }
 
-  if (isValidBase64(sigManager)) {
-    rIds.manager = 'rIdImg2';
-    imagesToAdd.push({ id: 'rIdImg2', data: sigManager, name: 'sig_manager.png' });
-  }
+  // The manager/leader's slot is always left blank for a physical wet signature — no
+  // image is embedded there at all, so nothing can render over the space they sign in.
 
   const docXml = buildLeaveRequestDocXml(data, config, rIds);
 
@@ -857,10 +860,13 @@ export function buildSwapDocXml(swapData: any, config: any, rIds: any = {}) {
     wpara(wrun(`Các chức danh kiểm tra lại lịch trực của mình và tự chịu trách nhiệm trước Phân xưởng nếu không đi ca theo đúng lịch đã đổi./.`, { size: 26 }), { spBefore: 120, indent: { firstLine: 720 } })
   ].join('');
 
-  const sig1 = rIds.person1 ? wpara(wimage(rIds.person1), { align: 'center' }) : emptyP(150, 0);
-  const sig2 = rIds.person2 ? wpara(wimage(rIds.person2), { align: 'center' }) : emptyP(150, 0);
-  const sigManager = rIds.manager ? wpara(wimage(rIds.manager), { align: 'center' }) : emptyP(150, 0);
+  const sig1 = rIds.person1 ? wpara(wimage(rIds.person1), { align: 'center' }) : sigPlaceholder();
+  const sig2 = rIds.person2 ? wpara(wimage(rIds.person2), { align: 'center' }) : sigPlaceholder();
+  const sigManager = rIds.manager ? wpara(wimage(rIds.manager), { align: 'center' }) : sigPlaceholder();
 
+  // One single row of three columns, each column a self-contained stack. Splitting this
+  // into several table rows would make the signature row wait for the tall "Nơi nhận"
+  // cell to finish, pushing the signatures far below their headings.
   const footTbl = wtable([
     wtr([
       wtc({
@@ -873,48 +879,18 @@ export function buildSwapDocXml(swapData: any, config: any, rIds: any = {}) {
       wtc({
         w: 3180, borders: false, content:
           wpara(wrun('NGƯỜI ĐỔI CA', { bold: true, size: 24 }), { align: 'center', spBefore: 80 })
+          + sig1
+          + wpara(wrun(person1, { bold: true, size: 24 }), { align: 'center' })
+          + wpara(wrun('QUẢN ĐỐC', { bold: true, size: 24 }), { align: 'center', spBefore: 240 })
+          + sigManager
+          + wpara(wrun(nguoiKy, { bold: true, size: 24 }), { align: 'center' })
       }),
       wtc({
         w: 3180, borders: false, content:
           wpara(wrun('NGƯỜI ĐI CA THAY', { bold: true, size: 24 }), { align: 'center', spBefore: 80 })
+          + sig2
+          + wpara(wrun(person2, { bold: true, size: 24 }), { align: 'center' })
       })
-    ]),
-    wtr([
-      wtc({ w: 3000, borders: false, content: emptyP() }),
-      wtc({ w: 3180, borders: false, content: sig1 }),
-      wtc({ w: 3180, borders: false, content: sig2 })
-    ]),
-    wtr([
-      wtc({ w: 3000, borders: false, content: emptyP() }),
-      wtc({
-        w: 3180, borders: false, content:
-          wpara(wrun(person1, { bold: true, size: 24 }), { align: 'center' })
-      }),
-      wtc({
-        w: 3180, borders: false, content:
-          wpara(wrun(person2, { bold: true, size: 24 }), { align: 'center' })
-      })
-    ]),
-    wtr([
-      wtc({ w: 3000, borders: false, content: emptyP() }),
-      wtc({
-        w: 3180, borders: false, content:
-          wpara(wrun('QUẢN ĐỐC', { bold: true, size: 24 }), { align: 'center', spBefore: 120 })
-      }),
-      wtc({ w: 3180, borders: false, content: emptyP() })
-    ]),
-    wtr([
-      wtc({ w: 3000, borders: false, content: emptyP() }),
-      wtc({ w: 3180, borders: false, content: sigManager }),
-      wtc({ w: 3180, borders: false, content: emptyP() })
-    ]),
-    wtr([
-      wtc({ w: 3000, borders: false, content: emptyP() }),
-      wtc({
-        w: 3180, borders: false, content:
-          wpara(wrun(nguoiKy, { bold: true, size: 24 }), { align: 'center' })
-      }),
-      wtc({ w: 3180, borders: false, content: emptyP() })
     ])
   ], [3000, 3180, 3180]);
 
@@ -953,6 +929,9 @@ export async function generateSwapBlob(swapData: any, config: any, signaturesOve
     rIds.person2 = 'rIdImg2';
     imagesToAdd.push({ id: 'rIdImg2', data: sig2, name: 'sig2.png' });
   }
+
+  // The manager/leader's slot is always left blank for a physical wet signature — no
+  // image is embedded there at all, so nothing can render over the space they sign in.
 
   const docXml = buildSwapDocXml(swapData, config, rIds);
 
@@ -1065,7 +1044,10 @@ export async function exportAllDocsZip(currentResult: any, leavesList: any[], co
       reason: leave.reason || "Giải quyết việc riêng gia đình",
       phone: leave.phone || "",
       leaveYear: String(new Date(leave.startDate).getFullYear() || new Date().getFullYear()),
-      location: leave.location || config?.locationName || config?.location || "Gia Lai"
+      location: leave.location || config?.locationName || config?.location || "Gia Lai",
+      // Carried over from the saved request, otherwise batch-exported documents would
+      // silently drop the "(có lấy giấy phép)" note that single exports include.
+      hasLeavePermit: leave.hasLeavePermit === true
     };
     
     const leaveBlob = await generateLeaveRequestBlob(leaveData, config, signatures);

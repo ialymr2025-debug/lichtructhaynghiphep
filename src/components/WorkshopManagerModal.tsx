@@ -32,7 +32,23 @@ export default function WorkshopManagerModal({
     ? workshops 
     : workshops.filter(w => w.id === userWorkshopId);
 
-  const [activeTab, setActiveTab] = useState<'workshops' | 'accounts' | 'create_admin' | 'edit_workshop'>('workshops');
+  const [activeTab, setActiveTab] = useState<'workshops' | 'accounts' | 'create_admin' | 'edit_workshop' | 'audit'>('workshops');
+  // Audit trail. Loaded on demand so opening the modal stays fast.
+  const [auditRows, setAuditRows] = useState<any[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const loadAudit = async () => {
+    setAuditLoading(true);
+    try {
+      const res = await fetch('/api/audit-log?limit=300');
+      const data = await res.json();
+      setAuditRows(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error('Loi tai nhat ky', e);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
   const [selectedWs, setSelectedWs] = useState<Workshop | null>(
     isSuperAdmin ? (activeWorkshop || workshops[0] || null) : (workshops.find(w => w.id === userWorkshopId) || null)
   );
@@ -61,7 +77,7 @@ export default function WorkshopManagerModal({
   const [wsChucVu, setWsChucVu] = useState('Quản đốc Phân xưởng');
   const [wsSoVanBan, setWsSoVanBan] = useState('');
   const [wsWebhookUrl, setWsWebhookUrl] = useState('https://vhialy.dpdns.org/webhook/notify');
-  const [wsGoogleSheetUrl, setWsGoogleSheetUrl] = useState('https://docs.google.com/spreadsheets/d/1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ/edit?gid=0#gid=0');
+  const [wsNotifyEmail, setWsNotifyEmail] = useState('');
 
   // Header / Title Customization
   const [wsCompanyName, setWsCompanyName] = useState('CÔNG TY THỦY ĐIỆN IALY');
@@ -435,11 +451,6 @@ export default function WorkshopManagerModal({
   };
 
   // Leave Rules Settings
-  const [maxAbsentPerTeam, setMaxAbsentPerTeam] = useState(1);
-  const [maxAbsentPerShift, setMaxAbsentPerShift] = useState(1);
-  const [advanceNoticeDays, setAdvanceNoticeDays] = useState(3);
-  const [allowOverlapSwap, setAllowOverlapSwap] = useState(true);
-  const [leaveRuleNote, setLeaveRuleNote] = useState('Đơn nghỉ phép phải gửi trước ít nhất 3 ngày.');
   
   const [features, setFeatures] = useState<WorkshopFeatures>({
     enablePhanCa: true,
@@ -549,10 +560,11 @@ export default function WorkshopManagerModal({
               recipientWorkshopName: createAdminWsName.trim(),
               shortWorkshopName: createAdminWsName.trim(),
               locationName: 'Gia Lai',
-              soVanBan: '01/PX',
+              soVanBan: '',
               nguoiKy: 'Lãnh đạo Phân xưởng',
               chucVuNguoiKy: 'Quản đốc Phân xưởng',
-              zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
+              zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify',
+              notifyEmail: ''
             }
           })
         });
@@ -621,7 +633,7 @@ export default function WorkshopManagerModal({
     setWsDesc('');
     setWsNguoiKy('Lãnh đạo Phân xưởng');
     setWsChucVu('Quản đốc Phân xưởng');
-    setWsSoVanBan('101/PX');
+    setWsSoVanBan('');
     setWsWebhookUrl('https://vhialy.dpdns.org/webhook/notify');
 
     setWsCompanyName('CÔNG TY THỦY ĐIỆN IALY');
@@ -642,12 +654,6 @@ export default function WorkshopManagerModal({
     setBaseDate('2025-10-01');
     setShiftsMatrixText(JSON.stringify(SHIFTS, null, 2));
     setRulesMatrixText(JSON.stringify(RULES, null, 2));
-
-    setMaxAbsentPerTeam(1);
-    setMaxAbsentPerShift(1);
-    setAdvanceNoticeDays(3);
-    setAllowOverlapSwap(true);
-    setLeaveRuleNote('Đơn nghỉ phép gửi trước ít nhất 3 ngày.');
 
     setFeatures({
       enablePhanCa: true,
@@ -674,7 +680,7 @@ export default function WorkshopManagerModal({
     setWsChucVu(ws.config?.chucVuNguoiKy || 'Quản đốc Phân xưởng');
     setWsSoVanBan(ws.config?.soVanBan !== undefined ? ws.config.soVanBan : '');
     setWsWebhookUrl(ws.config?.zaloWebhookUrl || 'https://vhialy.dpdns.org/webhook/notify');
-    setWsGoogleSheetUrl((ws.config as any)?.googleSheetUrl || 'https://docs.google.com/spreadsheets/d/1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ/edit?gid=0#gid=0');
+    setWsNotifyEmail(ws.config?.notifyEmail || '');
 
     setWsCompanyName(ws.config?.companyName || 'CÔNG TY THỦY ĐIỆN IALY');
     setWsHeaderWorkshopName(ws.config?.headerWorkshopName || ws.name.toUpperCase());
@@ -695,12 +701,6 @@ export default function WorkshopManagerModal({
     setBaseDate(ws.config?.shiftSchedule?.baseDate || '2025-10-01');
     setShiftsMatrixText(JSON.stringify(ws.config?.shiftSchedule?.shiftsMatrix || SHIFTS, null, 2));
     setRulesMatrixText(JSON.stringify(ws.config?.shiftSchedule?.rulesMatrix || RULES, null, 2));
-
-    setMaxAbsentPerTeam(ws.config?.leaveRules?.maxAbsentPerTeam ?? 1);
-    setMaxAbsentPerShift(ws.config?.leaveRules?.maxAbsentPerShift ?? 1);
-    setAdvanceNoticeDays(ws.config?.leaveRules?.advanceNoticeDays ?? 3);
-    setAllowOverlapSwap(ws.config?.leaveRules?.allowOverlapSwap ?? true);
-    setLeaveRuleNote(ws.config?.leaveRules?.leaveRuleNote || 'Đơn nghỉ phép phải gửi trước ít nhất 3 ngày.');
 
     setFeatures(ws.features || {
       enablePhanCa: true,
@@ -798,7 +798,7 @@ export default function WorkshopManagerModal({
           nguoiKy: wsNguoiKy.trim(),
           chucVuNguoiKy: wsChucVu.trim(),
           zaloWebhookUrl: wsWebhookUrl.trim(),
-          googleSheetUrl: wsGoogleSheetUrl.trim(),
+          notifyEmail: wsNotifyEmail.trim(),
           shiftSchedule: {
             shiftCa1Name: shiftCa1Name.trim(),
             shiftCa1Time: shiftCa1Time.trim(),
@@ -812,13 +812,6 @@ export default function WorkshopManagerModal({
             baseDate: baseDate.trim() || '2025-10-01',
             shiftsMatrix: parsedShifts,
             rulesMatrix: parsedRules
-          },
-          leaveRules: {
-            maxAbsentPerTeam: Number(maxAbsentPerTeam) || 1,
-            maxAbsentPerShift: Number(maxAbsentPerShift) || 1,
-            advanceNoticeDays: Number(advanceNoticeDays) || 3,
-            allowOverlapSwap,
-            leaveRuleNote: leaveRuleNote.trim()
           }
         },
         features
@@ -1006,7 +999,7 @@ export default function WorkshopManagerModal({
         {/* Modal Header */}
         <div className="bg-slate-900 text-white p-5 flex items-center justify-between border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-emerald-500/20 text-emerald-400 rounded-xl border border-emerald-500/30">
+            <div className="p-2.5 bg-sky-600/20 text-sky-500 rounded-xl border border-sky-600/30">
               <Factory size={22} />
             </div>
             <div>
@@ -1032,13 +1025,13 @@ export default function WorkshopManagerModal({
             onClick={() => { setActiveTab('workshops'); setMsg(null); }}
             className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all cursor-pointer flex items-center gap-2 ${
               activeTab === 'workshops'
-                ? 'bg-white text-slate-900 border-t-2 border-emerald-600 shadow-xs'
+                ? 'bg-white text-slate-900 border-t-2 border-sky-700 shadow-xs'
                 : 'text-slate-600 hover:bg-slate-200/70'
             }`}
           >
             <Building2 size={16} />
             <span>Danh sách Phân xưởng</span>
-            <span className="bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded-full text-[10px]">
+            <span className="bg-sky-100 text-sky-800 px-1.5 py-0.2 rounded-full text-[11px]">
               {visibleWorkshops.length}
             </span>
           </button>
@@ -1047,15 +1040,27 @@ export default function WorkshopManagerModal({
             onClick={() => { setActiveTab('accounts'); setMsg(null); }}
             className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all cursor-pointer flex items-center gap-2 ${
               activeTab === 'accounts'
-                ? 'bg-white text-slate-900 border-t-2 border-emerald-600 shadow-xs'
+                ? 'bg-white text-slate-900 border-t-2 border-sky-700 shadow-xs'
                 : 'text-slate-600 hover:bg-slate-200/70'
             }`}
           >
             <Users size={16} />
             <span>Tài khoản Đăng nhập</span>
-            <span className="bg-slate-200 text-slate-700 px-1.5 py-0.2 rounded-full text-[10px]">
+            <span className="bg-slate-200 text-slate-700 px-1.5 py-0.2 rounded-full text-[11px]">
               {visibleAccounts.length}
             </span>
+          </button>
+
+          <button
+            onClick={() => { setActiveTab('audit'); setMsg(null); loadAudit(); }}
+            className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all cursor-pointer flex items-center gap-2 ${
+              activeTab === 'audit'
+                ? 'bg-white text-slate-900 border-t-2 border-sky-700 shadow-xs'
+                : 'text-slate-600 hover:bg-slate-200/70'
+            }`}
+          >
+            <span>📜</span>
+            <span>Nhật ký thao tác</span>
           </button>
 
           {isSuperAdmin && (
@@ -1063,11 +1068,11 @@ export default function WorkshopManagerModal({
               onClick={() => { setActiveTab('create_admin'); setMsg(null); }}
               className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all cursor-pointer flex items-center gap-1.5 ${
                 activeTab === 'create_admin'
-                  ? 'bg-white text-emerald-950 border-t-2 border-emerald-600 shadow-xs'
-                  : 'text-emerald-800 bg-emerald-50/80 hover:bg-emerald-100 border border-emerald-200/80'
+                  ? 'bg-white text-sky-950 border-t-2 border-sky-700 shadow-xs'
+                  : 'text-sky-800 bg-sky-50/80 hover:bg-sky-100 border border-sky-200/80'
               }`}
             >
-              <Sparkles size={16} className="text-emerald-600" />
+              <Sparkles size={16} className="text-sky-700" />
               <span>Tạo Admin & Thiết lập Ban đầu</span>
             </button>
           )}
@@ -1075,8 +1080,8 @@ export default function WorkshopManagerModal({
           {isSuperAdmin && (
             <button
               onClick={openCreateWorkshop}
-              className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all cursor-pointer flex items-center gap-1.5 ml-auto text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 ${
-                activeTab === 'edit_workshop' && !editingWsId ? 'bg-emerald-600 text-white border-emerald-600' : ''
+              className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-all cursor-pointer flex items-center gap-1.5 ml-auto text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200/80 ${
+                activeTab === 'edit_workshop' && !editingWsId ? 'bg-sky-700 text-white border-sky-700' : ''
               }`}
             >
               <Plus size={16} />
@@ -1090,7 +1095,7 @@ export default function WorkshopManagerModal({
           {/* Notification Alert */}
           {msg && (
             <div className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 ${
-              msg.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
+              msg.type === 'success' ? 'bg-sky-50 text-sky-800 border border-sky-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
             }`}>
               <AlertCircle size={16} className="shrink-0" />
               <span>{msg.text}</span>
@@ -1117,7 +1122,7 @@ export default function WorkshopManagerModal({
                     <div>
                       <div className="flex items-start justify-between gap-2 mb-2">
                         <div>
-                          <span className="text-[10px] font-extrabold uppercase tracking-wider bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-md">
+                          <span className="text-[11px] font-extrabold uppercase tracking-wider bg-sky-100 text-sky-800 px-2 py-0.5 rounded-md">
                             {ws.code}
                           </span>
                           <h4 className="font-bold text-slate-900 text-sm mt-1">{ws.name}</h4>
@@ -1132,16 +1137,16 @@ export default function WorkshopManagerModal({
                       {/* Feature Pills */}
                       <div className="flex flex-wrap gap-1.5 mt-3">
                         {ws.features?.enablePhanCa && (
-                          <span className="text-[10px] bg-white border border-slate-200 text-slate-700 px-2 py-0.5 rounded-md">⚡ Phân ca</span>
+                          <span className="text-[11px] bg-white border border-slate-200 text-slate-700 px-2 py-0.5 rounded-md">⚡ Phân ca</span>
                         )}
                         {ws.features?.enableDonNghiPhep && (
-                          <span className="text-[10px] bg-white border border-slate-200 text-slate-700 px-2 py-0.5 rounded-md">📄 Đơn nghỉ phép</span>
+                          <span className="text-[11px] bg-white border border-slate-200 text-slate-700 px-2 py-0.5 rounded-md">📄 Đơn nghỉ phép</span>
                         )}
                         {ws.features?.enableDoiCa && (
-                          <span className="text-[10px] bg-white border border-slate-200 text-slate-700 px-2 py-0.5 rounded-md">🔄 Đổi ca</span>
+                          <span className="text-[11px] bg-white border border-slate-200 text-slate-700 px-2 py-0.5 rounded-md">🔄 Đổi ca</span>
                         )}
                         {ws.features?.enableChuKySo && (
-                          <span className="text-[10px] bg-white border border-slate-200 text-slate-700 px-2 py-0.5 rounded-md">✍️ Chữ ký số</span>
+                          <span className="text-[11px] bg-white border border-slate-200 text-slate-700 px-2 py-0.5 rounded-md">✍️ Chữ ký số</span>
                         )}
                       </div>
                     </div>
@@ -1154,7 +1159,7 @@ export default function WorkshopManagerModal({
                       <div className="flex items-center gap-1.5">
                         <button
                           onClick={() => openEditWorkshop(ws)}
-                          className="px-2.5 py-1.5 text-xs font-semibold bg-white hover:bg-emerald-50 text-emerald-700 border border-slate-200 hover:border-emerald-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 shadow-xs"
+                          className="px-2.5 py-1.5 text-xs font-semibold bg-white hover:bg-sky-50 text-sky-700 border border-slate-200 hover:border-sky-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 shadow-xs"
                         >
                           <Edit2 size={13} />
                           <span>Sửa Cấu hình</span>
@@ -1182,9 +1187,9 @@ export default function WorkshopManagerModal({
             <div className="space-y-6">
               {/* Quick Admin & Setup Launcher Banner */}
               {isSuperAdmin && (
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3.5 bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50 border border-emerald-200/80 rounded-2xl shadow-xs">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3.5 bg-gradient-to-r from-sky-50 via-sky-50 to-sky-50 border border-sky-200/80 rounded-2xl shadow-xs">
                   <div className="flex items-center gap-2.5">
-                    <Sparkles size={20} className="text-emerald-600 shrink-0" />
+                    <Sparkles size={20} className="text-sky-700 shrink-0" />
                     <div>
                       <div className="font-bold text-slate-900 text-xs">Tạo mới Tài khoản Admin Phân Xưởng + Thiết lập Ban đầu?</div>
                       <div className="text-[11px] text-slate-600">Khởi tạo tài khoản Quản trị phân xưởng và tự động mở ngay khung thiết lập ban đầu chỉ trong 1 thao tác.</div>
@@ -1193,7 +1198,7 @@ export default function WorkshopManagerModal({
                   <button
                     type="button"
                     onClick={() => { setActiveTab('create_admin'); setMsg(null); }}
-                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 shrink-0 self-end sm:self-auto"
+                    className="px-3.5 py-2 bg-sky-700 hover:bg-sky-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 shrink-0 self-end sm:self-auto"
                   >
                     <span>Tạo Admin & Thiết lập ngay</span>
                     <ArrowRight size={14} />
@@ -1204,7 +1209,7 @@ export default function WorkshopManagerModal({
               {/* Create Account Form */}
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-4">
                 <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
-                  <UserPlus size={18} className="text-emerald-600" />
+                  <UserPlus size={18} className="text-sky-700" />
                   <span>
                     Tạo Tài khoản Đăng nhập Mới {isSuperAdmin ? 'cho Phân xưởng' : `cho ${workshops.find(w => w.id === userWorkshopId)?.name}`}
                   </span>
@@ -1218,7 +1223,7 @@ export default function WorkshopManagerModal({
                       value={newUsername}
                       onChange={(e) => setNewUsername(e.target.value)}
                       placeholder="ví dụ: user_px_dien"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                       required
                     />
                   </div>
@@ -1230,7 +1235,7 @@ export default function WorkshopManagerModal({
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
                       placeholder="Mặc định: 123456"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20 font-mono"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20 font-mono"
                     />
                   </div>
 
@@ -1241,7 +1246,7 @@ export default function WorkshopManagerModal({
                       value={newFullName}
                       onChange={(e) => setNewFullName(e.target.value)}
                       placeholder="ví dụ: Nguyễn Văn A"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                       required
                     />
                   </div>
@@ -1251,7 +1256,7 @@ export default function WorkshopManagerModal({
                     <select
                       value={newRole}
                       onChange={(e: any) => setNewRole(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     >
                       {isSuperAdmin && (
                         <option value="super_admin">Super Admin (Quản trị toàn hệ thống)</option>
@@ -1267,7 +1272,7 @@ export default function WorkshopManagerModal({
                       value={isSuperAdmin ? newWsId : userWorkshopId}
                       onChange={(e) => isSuperAdmin && setNewWsId(e.target.value)}
                       disabled={!isSuperAdmin}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20 disabled:bg-slate-100 disabled:text-slate-600"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20 disabled:bg-slate-100 disabled:text-slate-600"
                     >
                       {visibleWorkshops.map(ws => (
                         <option key={ws.id} value={ws.id}>
@@ -1281,7 +1286,7 @@ export default function WorkshopManagerModal({
                     <button
                       type="submit"
                       disabled={isCreatingAccount}
-                      className="w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+                      className="w-full py-2 px-3 bg-sky-700 hover:bg-sky-700 text-white font-semibold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
                     >
                       {isCreatingAccount ? 'Đang tạo...' : 'Tạo Tài khoản'}
                     </button>
@@ -1294,7 +1299,7 @@ export default function WorkshopManagerModal({
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3">
                   <div className="flex items-center gap-2">
                     <h4 className="font-bold text-slate-900 text-sm">Danh sách Tài khoản Hiện có:</h4>
-                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[11px] font-bold rounded-full">
+                    <span className="px-2 py-0.5 bg-sky-100 text-sky-800 text-[11px] font-bold rounded-full">
                       {filteredAccounts.length} / {visibleAccounts.length}
                     </span>
                   </div>
@@ -1308,7 +1313,7 @@ export default function WorkshopManagerModal({
                         placeholder="Tìm tên đăng nhập/họ tên..."
                         value={accountSearch}
                         onChange={(e) => setAccountSearch(e.target.value)}
-                        className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                        className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                       />
                     </div>
 
@@ -1316,7 +1321,7 @@ export default function WorkshopManagerModal({
                       <select
                         value={accountWsFilter}
                         onChange={(e) => setAccountWsFilter(e.target.value)}
-                        className="py-1.5 px-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                        className="py-1.5 px-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                       >
                         <option value="all">Tất cả Phân xưởng</option>
                         {workshops.map(ws => (
@@ -1350,14 +1355,14 @@ export default function WorkshopManagerModal({
                           const ws = workshops.find(w => w.id === acc.workshopId);
                           return (
                             <tr key={acc.id} className="hover:bg-slate-50 transition-all">
-                              <td className="p-3 font-mono font-bold text-emerald-800">{acc.username}</td>
+                              <td className="p-3 font-mono font-bold text-sky-800">{acc.username}</td>
                               <td className="p-3 font-semibold text-slate-900">{acc.fullName}</td>
                               <td className="p-3">
-                                <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
+                                <span className={`px-2 py-0.5 rounded-md font-bold text-[11px] ${
                                   acc.role === 'super_admin'
                                     ? 'bg-amber-100 text-amber-800 border border-amber-200'
                                     : acc.role === 'workshop_admin'
-                                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                      ? 'bg-sky-100 text-sky-800 border border-sky-200'
                                       : 'bg-slate-100 text-slate-700 border border-slate-200'
                                 }`}>
                                   {acc.role === 'super_admin' ? 'Super Admin' : acc.role === 'workshop_admin' ? 'Admin PX' : 'User PX'}
@@ -1369,7 +1374,7 @@ export default function WorkshopManagerModal({
                               <td className="p-3 text-right flex items-center justify-end gap-1">
                                 <button
                                   onClick={() => openEditAccount(acc)}
-                                  className="px-2 py-1 bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200 rounded-lg transition-all cursor-pointer font-semibold flex items-center gap-1 text-[11px]"
+                                  className="px-2 py-1 bg-slate-100 hover:bg-sky-50 text-slate-700 hover:text-sky-700 border border-slate-200 rounded-lg transition-all cursor-pointer font-semibold flex items-center gap-1 text-[11px]"
                                   title="Chỉnh sửa thông tin / Đổi mật khẩu"
                                 >
                                   <Edit2 size={13} />
@@ -1401,7 +1406,7 @@ export default function WorkshopManagerModal({
                   <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4">
                     <div className="bg-slate-900 text-white p-4 flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Edit2 size={18} className="text-emerald-400" />
+                        <Edit2 size={18} className="text-sky-500" />
                         <h4 className="font-bold text-sm">Chỉnh sửa Tài khoản: {editingAccount.username}</h4>
                       </div>
                       <button
@@ -1419,7 +1424,7 @@ export default function WorkshopManagerModal({
                           type="text"
                           value={editUsername}
                           onChange={(e) => setEditUsername(e.target.value)}
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                           required
                         />
                       </div>
@@ -1430,7 +1435,7 @@ export default function WorkshopManagerModal({
                           type="text"
                           value={editFullName}
                           onChange={(e) => setEditFullName(e.target.value)}
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                           required
                         />
                       </div>
@@ -1442,7 +1447,7 @@ export default function WorkshopManagerModal({
                           value={editPassword}
                           onChange={(e) => setEditPassword(e.target.value)}
                           placeholder="Nhập mật khẩu mới..."
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20 font-mono"
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20 font-mono"
                         />
                       </div>
 
@@ -1452,7 +1457,7 @@ export default function WorkshopManagerModal({
                           value={editRole}
                           onChange={(e: any) => setEditRole(e.target.value)}
                           disabled={!isSuperAdmin && editingAccount.role === 'super_admin'}
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20 disabled:bg-slate-100"
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20 disabled:bg-slate-100"
                         >
                           {isSuperAdmin && (
                             <option value="super_admin">Super Admin (Quản trị toàn hệ thống)</option>
@@ -1468,7 +1473,7 @@ export default function WorkshopManagerModal({
                           value={isSuperAdmin ? editWsId : userWorkshopId}
                           onChange={(e) => isSuperAdmin && setEditWsId(e.target.value)}
                           disabled={!isSuperAdmin}
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20 disabled:bg-slate-100"
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20 disabled:bg-slate-100"
                         >
                           {isSuperAdmin && (
                             <option value="all">Tất cả Phân xưởng (all)</option>
@@ -1492,7 +1497,7 @@ export default function WorkshopManagerModal({
                         <button
                           type="submit"
                           disabled={isUpdatingAccount}
-                          className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                          className="px-5 py-2 bg-sky-700 hover:bg-sky-700 text-white font-semibold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
                         >
                           {isUpdatingAccount ? 'Đang lưu...' : 'Lưu cập nhật'}
                         </button>
@@ -1505,15 +1510,84 @@ export default function WorkshopManagerModal({
           )}
 
           {/* TAB: CREATE ADMIN & INITIAL SETUP */}
+          {activeTab === 'audit' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-bold text-slate-900 text-sm">Nhật ký thao tác</h4>
+                  <p className="text-[11px] text-slate-500">
+                    Ghi lại mọi thao tác thay đổi dữ liệu: ai làm, lúc nào, kết quả ra sao.
+                    {isSuperAdmin ? ' (Super Admin thấy toàn hệ thống)' : ' (Chỉ phân xưởng của bạn)'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={loadAudit}
+                  className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  ↻ Làm mới
+                </button>
+              </div>
+
+              {auditLoading ? (
+                <div className="py-8 text-center text-slate-400 text-xs font-medium">Đang tải nhật ký...</div>
+              ) : auditRows.length === 0 ? (
+                <div className="py-8 text-center text-slate-400 text-xs font-medium">Chưa có thao tác nào được ghi nhận.</div>
+              ) : (
+                <div className="table-scroll border border-slate-200 rounded-xl max-h-[460px] overflow-auto">
+                  <table className="w-full min-w-[760px] text-[11px]">
+                    <thead className="bg-slate-50 sticky top-0">
+                      <tr className="text-left text-slate-600">
+                        <th className="px-3 py-2 font-bold whitespace-nowrap">Thời gian</th>
+                        <th className="px-3 py-2 font-bold whitespace-nowrap">Người thực hiện</th>
+                        <th className="px-3 py-2 font-bold whitespace-nowrap">Thao tác</th>
+                        <th className="px-3 py-2 font-bold">Chi tiết</th>
+                        <th className="px-3 py-2 font-bold whitespace-nowrap">Kết quả</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditRows.map((r) => (
+                        <tr key={r.id} className="border-t border-slate-100 hover:bg-slate-50/70">
+                          <td className="px-3 py-1.5 whitespace-nowrap text-slate-500">
+                            {new Date(r.at).toLocaleString('vi-VN')}
+                          </td>
+                          <td className="px-3 py-1.5 whitespace-nowrap">
+                            <span className="font-semibold text-slate-800">{r.username || '—'}</span>
+                            {r.role === 'super_admin' && (
+                              <span className="ml-1 text-[11px] bg-amber-100 text-amber-800 px-1.5 rounded-full font-bold">SA</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-1.5 whitespace-nowrap font-mono text-slate-600">
+                            {r.method} {r.path}
+                          </td>
+                          <td className="px-3 py-1.5 text-slate-600 break-words">{r.summary || ''}</td>
+                          <td className="px-3 py-1.5 whitespace-nowrap">
+                            <span className={`px-1.5 py-0.5 rounded-full font-bold ${
+                              r.status >= 200 && r.status < 300
+                                ? 'bg-sky-100 text-sky-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}>
+                              {r.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'create_admin' && (
             <div className="space-y-5 text-xs">
               {/* Header Banner */}
-              <div className="p-4 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white rounded-2xl shadow-md space-y-1">
+              <div className="p-4 bg-gradient-to-r from-sky-700 via-sky-700 to-sky-700 text-white rounded-2xl shadow-md space-y-1">
                 <div className="flex items-center gap-2">
                   <Sparkles size={20} className="text-amber-300 animate-pulse" />
                   <h4 className="font-extrabold text-base">Tạo mới Tài khoản Admin Phân xưởng & Mở Thiết lập Ban đầu</h4>
                 </div>
-                <p className="text-emerald-100 text-xs">
+                <p className="text-sky-100 text-xs">
                   Điền thông tin tài khoản quản trị bên dưới. Ngay khi bấm "Tạo & Mở thiết lập", hệ thống sẽ khởi tạo tài khoản và tự động mở hộp thoại cấu hình thiết lập ban đầu cho phân xưởng đó.
                 </p>
               </div>
@@ -1522,7 +1596,7 @@ export default function WorkshopManagerModal({
                 {/* Section 1: Thông tin tài khoản Admin */}
                 <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
                   <div className="flex items-center gap-2 font-bold text-slate-800 text-sm border-b border-slate-200 pb-2">
-                    <UserPlus size={16} className="text-emerald-600" />
+                    <UserPlus size={16} className="text-sky-700" />
                     <span>1. Thông tin Tài khoản Quản trị (Admin Phân xưởng)</span>
                   </div>
 
@@ -1536,7 +1610,7 @@ export default function WorkshopManagerModal({
                         value={createAdminUsername}
                         onChange={(e) => setCreateAdminUsername(e.target.value)}
                         placeholder="ví dụ: admin_vh_pleikrong"
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                         required
                       />
                     </div>
@@ -1550,7 +1624,7 @@ export default function WorkshopManagerModal({
                         value={createAdminPassword}
                         onChange={(e) => setCreateAdminPassword(e.target.value)}
                         placeholder="123456"
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono font-medium focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                         required
                       />
                     </div>
@@ -1564,7 +1638,7 @@ export default function WorkshopManagerModal({
                         value={createAdminFullName}
                         onChange={(e) => setCreateAdminFullName(e.target.value)}
                         placeholder="ví dụ: Nguyễn Văn Quản Lý"
-                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                         required
                       />
                     </div>
@@ -1575,7 +1649,7 @@ export default function WorkshopManagerModal({
                 <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
                   <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                     <div className="flex items-center gap-2 font-bold text-slate-800 text-sm">
-                      <Building2 size={16} className="text-emerald-600" />
+                      <Building2 size={16} className="text-sky-700" />
                       <span>2. Phân xưởng Áp dụng cho Tài khoản Admin này</span>
                     </div>
 
@@ -1586,7 +1660,7 @@ export default function WorkshopManagerModal({
                         onClick={() => setCreateAdminWsOption('new')}
                         className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                           createAdminWsOption === 'new'
-                            ? 'bg-emerald-600 text-white shadow-xs'
+                            ? 'bg-sky-700 text-white shadow-xs'
                             : 'text-slate-600 hover:bg-slate-100'
                         }`}
                       >
@@ -1597,7 +1671,7 @@ export default function WorkshopManagerModal({
                         onClick={() => setCreateAdminWsOption('existing')}
                         className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                           createAdminWsOption === 'existing'
-                            ? 'bg-emerald-600 text-white shadow-xs'
+                            ? 'bg-sky-700 text-white shadow-xs'
                             : 'text-slate-600 hover:bg-slate-100'
                         }`}
                       >
@@ -1615,7 +1689,7 @@ export default function WorkshopManagerModal({
                           value={createAdminWsName}
                           onChange={(e) => setCreateAdminWsName(e.target.value)}
                           placeholder="ví dụ: Phân xưởng Vận hành Pleikrông"
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                           required={createAdminWsOption === 'new'}
                         />
                       </div>
@@ -1627,7 +1701,7 @@ export default function WorkshopManagerModal({
                           value={createAdminWsCode}
                           onChange={(e) => setCreateAdminWsCode(e.target.value)}
                           placeholder="ví dụ: VHPK"
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold uppercase focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                         />
                       </div>
 
@@ -1638,7 +1712,7 @@ export default function WorkshopManagerModal({
                           value={createAdminWsDesc}
                           onChange={(e) => setCreateAdminWsDesc(e.target.value)}
                           placeholder="Mô tả chức năng nhiệm vụ..."
-                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                          className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                         />
                       </div>
                     </div>
@@ -1648,7 +1722,7 @@ export default function WorkshopManagerModal({
                       <select
                         value={createAdminSelectedWsId}
                         onChange={(e) => setCreateAdminSelectedWsId(e.target.value)}
-                        className="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                        className="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                       >
                         {workshops.map(ws => (
                           <option key={ws.id} value={ws.id}>
@@ -1665,7 +1739,7 @@ export default function WorkshopManagerModal({
                   <button
                     type="submit"
                     disabled={isCreatingAdminAndSetup}
-                    className="w-full sm:w-auto px-6 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-98"
+                    className="w-full sm:w-auto px-6 py-3 bg-sky-700 hover:bg-sky-700 disabled:opacity-50 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2 active:scale-98"
                   >
                     {isCreatingAdminAndSetup ? (
                       <span>Đang khởi tạo tài khoản & mở thiết lập...</span>
@@ -1684,12 +1758,12 @@ export default function WorkshopManagerModal({
           {/* TAB 3: CREATE / EDIT WORKSHOP FORM */}
           {activeTab === 'edit_workshop' && (
             <form onSubmit={handleSaveWorkshop} className="space-y-5 text-xs">
-              <div className="p-4 bg-emerald-50/60 border border-emerald-200/80 rounded-2xl flex items-center justify-between">
+              <div className="p-4 bg-sky-50/60 border border-sky-200/80 rounded-2xl flex items-center justify-between">
                 <div>
-                  <h4 className="font-bold text-emerald-950 text-sm">
+                  <h4 className="font-bold text-sky-950 text-sm">
                     {editingWsId ? 'Cấu hình Lịch Ca, Quy luật Nghỉ phép & Văn bản Phân xưởng' : 'Tạo Phân xưởng Mới & Thiết lập Chức năng'}
                   </h4>
-                  <p className="text-emerald-700 text-xs">
+                  <p className="text-sky-700 text-xs">
                     Tùy chỉnh lịch đi ca riêng, quy luật nghỉ phép, tiêu đề xuất Word/PDF và danh sách nhân sự của phân xưởng.
                   </p>
                 </div>
@@ -1704,7 +1778,7 @@ export default function WorkshopManagerModal({
                     value={wsName}
                     onChange={(e) => setWsName(e.target.value)}
                     placeholder="ví dụ: Phân xưởng Sửa chữa"
-                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     required
                   />
                 </div>
@@ -1716,7 +1790,7 @@ export default function WorkshopManagerModal({
                     value={wsCode}
                     onChange={(e) => setWsCode(e.target.value)}
                     placeholder="ví dụ: PX-SC"
-                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500/20 uppercase"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-sky-600/20 uppercase"
                   />
                 </div>
 
@@ -1727,14 +1801,14 @@ export default function WorkshopManagerModal({
                     value={wsDesc}
                     onChange={(e) => setWsDesc(e.target.value)}
                     placeholder="Mô tả chức năng nhiệm vụ..."
-                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                   />
                 </div>
               </div>
 
               {/* 1. Document Header Customization */}
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-                <h5 className="font-bold text-slate-900 text-xs uppercase tracking-wider text-emerald-800">
+                <h5 className="font-bold text-slate-900 text-xs uppercase tracking-wider text-sky-800">
                   1. Tùy chỉnh Tiêu đề & Tên Phân xưởng trên Văn bản (Word/PDF)
                 </h5>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1745,7 +1819,7 @@ export default function WorkshopManagerModal({
                       value={wsCompanyName}
                       onChange={(e) => setWsCompanyName(e.target.value)}
                       placeholder="CÔNG TY THỦY ĐIỆN IALY"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     />
                   </div>
 
@@ -1756,7 +1830,7 @@ export default function WorkshopManagerModal({
                       value={wsHeaderWorkshopName}
                       onChange={(e) => setWsHeaderWorkshopName(e.target.value)}
                       placeholder="PHÂN XƯỞNG SỬA CHỮA"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 uppercase"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20 uppercase"
                     />
                   </div>
 
@@ -1767,7 +1841,7 @@ export default function WorkshopManagerModal({
                       value={wsDocumentCodeSuffix}
                       onChange={(e) => setWsDocumentCodeSuffix(e.target.value)}
                       placeholder="/PXSC"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     />
                   </div>
 
@@ -1778,7 +1852,7 @@ export default function WorkshopManagerModal({
                       value={wsRecipientWorkshopName}
                       onChange={(e) => setWsRecipientWorkshopName(e.target.value)}
                       placeholder="Phân xưởng Sửa chữa"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     />
                   </div>
 
@@ -1789,7 +1863,7 @@ export default function WorkshopManagerModal({
                       value={wsShortWorkshopName}
                       onChange={(e) => setWsShortWorkshopName(e.target.value)}
                       placeholder="PX Sửa chữa"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     />
                   </div>
 
@@ -1800,7 +1874,7 @@ export default function WorkshopManagerModal({
                       value={wsLocationName}
                       onChange={(e) => setWsLocationName(e.target.value)}
                       placeholder="Ví dụ: Gia Lai, Kon Tum, Đắk Lắk..."
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     />
                   </div>
                 </div>
@@ -1808,7 +1882,7 @@ export default function WorkshopManagerModal({
 
               {/* 2. Shift Schedule Config */}
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-                <h5 className="font-bold text-slate-900 text-xs uppercase tracking-wider text-emerald-800">
+                <h5 className="font-bold text-slate-900 text-xs uppercase tracking-wider text-sky-800">
                   2. Cấu hình Lịch Đi Ca & Kíp Trực Riêng của Phân xưởng
                 </h5>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1881,7 +1955,7 @@ export default function WorkshopManagerModal({
                       value={teamsListText}
                       onChange={(e) => setTeamsListText(e.target.value)}
                       placeholder="Kíp 1, Kíp 2, Kíp 3, Kíp 4, Kíp 5"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     />
                   </div>
 
@@ -1893,7 +1967,7 @@ export default function WorkshopManagerModal({
                       max={30}
                       value={cycleLengthDays}
                       onChange={(e) => setCycleLengthDays(Number(e.target.value))}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     />
                   </div>
                 </div>
@@ -1905,7 +1979,7 @@ export default function WorkshopManagerModal({
                     value={shiftNote}
                     onChange={(e) => setShiftNote(e.target.value)}
                     placeholder="Lịch đi ca 3 ca 5 kíp xoay vòng..."
-                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                   />
                 </div>
 
@@ -1918,7 +1992,7 @@ export default function WorkshopManagerModal({
                       type="date"
                       value={baseDate}
                       onChange={(e) => setBaseDate(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono font-bold text-emerald-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono font-bold text-sky-800 focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                       required
                     />
                     <p className="text-[11px] text-slate-500 mt-0.5">
@@ -1928,12 +2002,12 @@ export default function WorkshopManagerModal({
                 </div>
 
                 <div className="pt-3 border-t border-slate-200/80 mt-2 space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-emerald-50/80 p-2.5 rounded-xl border border-emerald-100">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-sky-50/80 p-2.5 rounded-xl border border-sky-100">
                     <div>
-                      <h6 className="font-bold text-emerald-950 text-xs uppercase tracking-wider flex items-center gap-1.5">
-                        <Sparkles size={14} className="text-emerald-600" /> Bảng Bấm Chọn Lịch Ca & Kíp Trực Thay
+                      <h6 className="font-bold text-sky-950 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                        <Sparkles size={14} className="text-sky-700" /> Bảng Bấm Chọn Lịch Ca & Kíp Trực Thay
                       </h6>
-                      <p className="text-[11px] text-emerald-800">
+                      <p className="text-[11px] text-sky-800">
                         Thao tác dạng Bảng Bấm trực quan dễ sử dụng cho người dùng không biết lập trình.
                       </p>
                     </div>
@@ -1944,7 +2018,7 @@ export default function WorkshopManagerModal({
                         onClick={() => setMatrixMode('visual')}
                         className={`px-3 py-1 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
                           matrixMode === 'visual'
-                            ? 'bg-emerald-600 text-white font-semibold shadow-sm'
+                            ? 'bg-sky-700 text-white font-semibold shadow-sm'
                             : 'text-slate-600 hover:text-slate-900'
                         }`}
                       >
@@ -1967,7 +2041,7 @@ export default function WorkshopManagerModal({
                   {/* Excel Download & Upload Action Toolbar for Shift Matrix */}
                   <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
                     <div className="flex items-center gap-2">
-                      <FileSpreadsheet size={16} className="text-emerald-600" />
+                      <FileSpreadsheet size={16} className="text-sky-700" />
                       <span className="font-semibold text-slate-700">Thao tác File Excel Ma Trận & Quy Luật:</span>
                     </div>
 
@@ -1975,7 +2049,7 @@ export default function WorkshopManagerModal({
                       <button
                         type="button"
                         onClick={handleDownloadShiftScheduleExcel}
-                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+                        className="px-3 py-1.5 bg-sky-700 hover:bg-sky-700 text-white rounded-lg font-medium shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
                         title="Tải xuống file Mẫu Excel gồm Ma trận ca trực & Quy luật trực thay"
                       >
                         <Download size={13} /> Tải Mẫu Excel Ma Trận
@@ -2003,7 +2077,7 @@ export default function WorkshopManagerModal({
                   {matrixUploadNotice && (
                     <div className={`p-3 rounded-xl border text-xs flex items-center justify-between ${
                       matrixUploadNotice.type === 'success' 
-                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800 font-medium' 
+                        ? 'bg-sky-50 border-sky-200 text-sky-800 font-medium' 
                         : 'bg-rose-50 border-rose-200 text-rose-800 font-medium'
                     }`}>
                       <span>{matrixUploadNotice.text}</span>
@@ -2033,7 +2107,7 @@ export default function WorkshopManagerModal({
                           <button
                             type="button"
                             onClick={() => setShiftsMatrixText(JSON.stringify(SHIFTS, null, 2))}
-                            className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                            className="text-[11px] font-semibold text-sky-700 hover:text-sky-900 bg-sky-50 hover:bg-sky-100 px-2.5 py-1 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
                           >
                             <RefreshCw size={11} /> Khôi phục Mặc định
                           </button>
@@ -2064,7 +2138,7 @@ export default function WorkshopManagerModal({
                                         onChange={(e) => handleShiftCellChange(kIdx, dIdx, e.target.value)}
                                         className={`px-2 py-1.5 rounded-lg font-bold text-xs border text-center cursor-pointer transition-all focus:outline-none focus:ring-2 ${
                                           cellVal === 'N'
-                                            ? 'bg-emerald-100 text-emerald-800 border-emerald-300 focus:ring-emerald-400'
+                                            ? 'bg-sky-100 text-sky-800 border-sky-300 focus:ring-sky-500'
                                             : cellVal === 'C'
                                             ? 'bg-amber-100 text-amber-800 border-amber-300 focus:ring-amber-400'
                                             : cellVal === 'K'
@@ -2100,11 +2174,11 @@ export default function WorkshopManagerModal({
                                   return (
                                     <td key={dIdx} className="p-2 text-center">
                                       {isOk ? (
-                                        <span className="inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold text-[10px]" title="Đủ 1N, 1C, 1K">
+                                        <span className="inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-md bg-sky-100 text-sky-800 border border-sky-300 font-bold text-[11px]" title="Đủ 1N, 1C, 1K">
                                           <Check size={12} /> 1N-1C-1K
                                         </span>
                                       ) : (
-                                        <span className="inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-md bg-rose-100 text-rose-800 border border-rose-300 font-bold text-[10px]" title={`Thừa/thiếu ca! Hiện có: ${n}N, ${c}C, ${k}K, ${o}O`}>
+                                        <span className="inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-md bg-rose-100 text-rose-800 border border-rose-300 font-bold text-[11px]" title={`Thừa/thiếu ca! Hiện có: ${n}N, ${c}C, ${k}K, ${o}O`}>
                                           <AlertCircle size={12} /> Lỗi (N:{n} C:{c} K:{k})
                                         </span>
                                       )}
@@ -2121,8 +2195,8 @@ export default function WorkshopManagerModal({
                           const currentVal = validateShiftsMatrix(getParsedShifts());
                           if (currentVal.isValid) {
                             return (
-                              <div className="mt-2.5 p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold flex items-center gap-2">
-                                <Check size={16} className="text-emerald-600 shrink-0" />
+                              <div className="mt-2.5 p-2.5 bg-sky-50 border border-sky-200 text-sky-800 rounded-xl text-xs font-semibold flex items-center gap-2">
+                                <Check size={16} className="text-sky-700 shrink-0" />
                                 <span>Ma trận ca trực hợp lệ: Mỗi ngày đều có đúng <b>1 ca N, 1 ca C, 1 ca K</b> (và {getParsedShifts().length - 3} ca O).</span>
                               </div>
                             );
@@ -2141,7 +2215,7 @@ export default function WorkshopManagerModal({
 
                         <div className="flex flex-wrap items-center gap-2 mt-2 text-[11px] text-slate-600">
                           <span className="font-semibold">Chú giải ca:</span>
-                          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">N: Ca Ngày</span>
+                          <span className="px-2 py-0.5 rounded bg-sky-100 text-sky-800 font-bold">N: Ca Ngày</span>
                           <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-bold">C: Ca Chiều</span>
                           <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 font-bold">K: Ca Đêm</span>
                           <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-bold">O: Nghỉ Ca</span>
@@ -2162,7 +2236,7 @@ export default function WorkshopManagerModal({
                           <button
                             type="button"
                             onClick={() => setRulesMatrixText(JSON.stringify(RULES, null, 2))}
-                            className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                            className="text-[11px] font-semibold text-sky-700 hover:text-sky-900 bg-sky-50 hover:bg-sky-100 px-2.5 py-1 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
                           >
                             <RefreshCw size={11} /> Khôi phục Mặc định
                           </button>
@@ -2183,12 +2257,12 @@ export default function WorkshopManagerModal({
                                 {/* Ca N */}
                                 <div>
                                   <label className="block text-[11px] text-slate-600 mb-0.5">
-                                    Nghỉ Ca <span className="font-bold text-emerald-700">Ngày (N)</span>:
+                                    Nghỉ Ca <span className="font-bold text-sky-700">Ngày (N)</span>:
                                   </label>
                                   <select
                                     value={kipRule.N?.k || ''}
                                     onChange={(e) => handleRuleChange(kipNum, 'N', e.target.value ? Number(e.target.value) : 0)}
-                                    className={`w-full px-2 py-1 bg-white border rounded-lg text-xs font-semibold focus:ring-1 focus:ring-emerald-500 cursor-pointer ${
+                                    className={`w-full px-2 py-1 bg-white border rounded-lg text-xs font-semibold focus:ring-1 focus:ring-sky-600 cursor-pointer ${
                                       !kipRule.N?.k ? 'border-rose-400 bg-rose-50 text-rose-700 font-bold' : 'border-slate-300 text-slate-800'
                                     }`}
                                   >
@@ -2209,7 +2283,7 @@ export default function WorkshopManagerModal({
                                   <select
                                     value={kipRule.C?.k || ''}
                                     onChange={(e) => handleRuleChange(kipNum, 'C', e.target.value ? Number(e.target.value) : 0)}
-                                    className={`w-full px-2 py-1 bg-white border rounded-lg text-xs font-semibold focus:ring-1 focus:ring-emerald-500 cursor-pointer ${
+                                    className={`w-full px-2 py-1 bg-white border rounded-lg text-xs font-semibold focus:ring-1 focus:ring-sky-600 cursor-pointer ${
                                       !kipRule.C?.k ? 'border-rose-400 bg-rose-50 text-rose-700 font-bold' : 'border-slate-300 text-slate-800'
                                     }`}
                                   >
@@ -2230,7 +2304,7 @@ export default function WorkshopManagerModal({
                                   <select
                                     value={kipRule.K?.k || ''}
                                     onChange={(e) => handleRuleChange(kipNum, 'K', e.target.value ? Number(e.target.value) : 0)}
-                                    className={`w-full px-2 py-1 bg-white border rounded-lg text-xs font-semibold focus:ring-1 focus:ring-emerald-500 cursor-pointer ${
+                                    className={`w-full px-2 py-1 bg-white border rounded-lg text-xs font-semibold focus:ring-1 focus:ring-sky-600 cursor-pointer ${
                                       !kipRule.K?.k ? 'border-rose-400 bg-rose-50 text-rose-700 font-bold' : 'border-slate-300 text-slate-800'
                                     }`}
                                   >
@@ -2252,8 +2326,8 @@ export default function WorkshopManagerModal({
                           const currentRulesVal = validateRulesMatrix(getParsedRules(), getParsedShifts().length);
                           if (currentRulesVal.isValid) {
                             return (
-                              <div className="mt-2.5 p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold flex items-center gap-2">
-                                <Check size={16} className="text-emerald-600 shrink-0" />
+                              <div className="mt-2.5 p-2.5 bg-sky-50 border border-sky-200 text-sky-800 rounded-xl text-xs font-semibold flex items-center gap-2">
+                                <Check size={16} className="text-sky-700 shrink-0" />
                                 <span>Quy luật phân công trực thay hợp lệ: Tất cả các ca nghỉ (N, C, K) của các Kíp đều đã chọn kíp đi thay đầy đủ.</span>
                               </div>
                             );
@@ -2281,7 +2355,7 @@ export default function WorkshopManagerModal({
                           <button
                             type="button"
                             onClick={() => setShiftsMatrixText(JSON.stringify(SHIFTS, null, 2))}
-                            className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                            className="text-[11px] font-semibold text-sky-700 hover:text-sky-900 bg-sky-50 hover:bg-sky-100 px-2 py-0.5 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
                           >
                             <RefreshCw size={11} /> Mặc định
                           </button>
@@ -2290,7 +2364,7 @@ export default function WorkshopManagerModal({
                           value={shiftsMatrixText}
                           onChange={(e) => setShiftsMatrixText(e.target.value)}
                           rows={6}
-                          className="w-full font-mono text-xs p-2.5 bg-slate-900 text-amber-300 rounded-xl border border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                          className="w-full font-mono text-xs p-2.5 bg-slate-900 text-amber-300 rounded-xl border border-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-600"
                         />
                         <p className="text-[11px] text-slate-500 mt-0.5">
                           Ma trận 5 hàng (tương ứng Kíp 1 đến Kíp 5) x 5 ngày chu kỳ. Giá trị: "N" (Ngày), "C" (Chiều), "K" (Đêm), "O" (Nghỉ).
@@ -2305,7 +2379,7 @@ export default function WorkshopManagerModal({
                           <button
                             type="button"
                             onClick={() => setRulesMatrixText(JSON.stringify(RULES, null, 2))}
-                            className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                            className="text-[11px] font-semibold text-sky-700 hover:text-sky-900 bg-sky-50 hover:bg-sky-100 px-2 py-0.5 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
                           >
                             <RefreshCw size={11} /> Mặc định
                           </button>
@@ -2314,7 +2388,7 @@ export default function WorkshopManagerModal({
                           value={rulesMatrixText}
                           onChange={(e) => setRulesMatrixText(e.target.value)}
                           rows={6}
-                          className="w-full font-mono text-xs p-2.5 bg-slate-900 text-sky-300 rounded-xl border border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                          className="w-full font-mono text-xs p-2.5 bg-slate-900 text-sky-300 rounded-xl border border-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-600"
                         />
                         <p className="text-[11px] text-slate-500 mt-0.5">
                           Xác định kíp nào sẽ ưu tiên trực thay khi Kíp nghỉ xin phép ở từng ca N, C, K.
@@ -2329,10 +2403,10 @@ export default function WorkshopManagerModal({
 
               {/* 4. Leader Signature & Webhook Config */}
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-                <h5 className="font-bold text-slate-900 text-xs uppercase tracking-wider text-emerald-800">
+                <h5 className="font-bold text-slate-900 text-xs uppercase tracking-wider text-sky-800">
                   3. Người Ký Văn bản & Zalo Webhook
                 </h5>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-medium text-slate-700 mb-1">Họ và tên Người ký văn bản</label>
                     <input
@@ -2340,7 +2414,7 @@ export default function WorkshopManagerModal({
                       value={wsNguoiKy}
                       onChange={(e) => setWsNguoiKy(e.target.value)}
                       placeholder="ví dụ: Nguyễn Văn Nghị"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     />
                   </div>
 
@@ -2351,20 +2425,10 @@ export default function WorkshopManagerModal({
                       value={wsChucVu}
                       onChange={(e) => setWsChucVu(e.target.value)}
                       placeholder="Quản đốc Phân xưởng"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                     />
                   </div>
 
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">Số văn bản mặc định</label>
-                    <input
-                      type="text"
-                      value={wsSoVanBan}
-                      onChange={(e) => setWsSoVanBan(e.target.value)}
-                      placeholder="ví dụ: 123/PX"
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                    />
-                  </div>
                 </div>
 
                 <div>
@@ -2374,35 +2438,24 @@ export default function WorkshopManagerModal({
                     value={wsWebhookUrl}
                     onChange={(e) => setWsWebhookUrl(e.target.value)}
                     placeholder="https://vhialy.dpdns.org/webhook/notify"
-                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                   />
                 </div>
 
-                <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-xl space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="block font-bold text-emerald-900 text-xs uppercase tracking-wider">
-                      📊 Link Google Sheet (Lưu Lịch Sử & Tra Cứu Số Ngày Phép)
-                    </label>
-                    <a 
-                      href={wsGoogleSheetUrl || 'https://docs.google.com/spreadsheets/d/1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ/edit?gid=0#gid=0'} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="text-[11px] text-emerald-700 font-semibold hover:underline"
-                    >
-                      🔗 Mở Sheet
-                    </a>
-                  </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Email Nhận Thông Báo cho PX này</label>
                   <input
                     type="text"
-                    value={wsGoogleSheetUrl}
-                    onChange={(e) => setWsGoogleSheetUrl(e.target.value)}
-                    placeholder="https://docs.google.com/spreadsheets/d/1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ/edit"
-                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    value={wsNotifyEmail}
+                    onChange={(e) => setWsNotifyEmail(e.target.value)}
+                    placeholder="vd: quandoc@gmail.com (nhiều địa chỉ cách nhau bằng dấu phẩy)"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-sky-600/20"
                   />
-                  <span className="text-[11px] text-slate-600 italic block">
-                    * Đơn nghỉ phép và số ngày phép của phân xưởng sẽ tự động lưu và tra cứu tại Google Sheet này. Nếu để trống, sẽ lưu tại sheet mặc định.
+                  <span className="text-[11px] text-slate-500 italic mt-1 block">
+                    * Mỗi khi có đơn nghỉ phép mới, hệ thống gửi thông báo qua cả Zalo webhook và email này (nếu có điền).
                   </span>
                 </div>
+
               </div>
 
 
@@ -2426,7 +2479,7 @@ export default function WorkshopManagerModal({
                 <button
                   type="submit"
                   disabled={isSavingWs}
-                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-1.5"
+                  className="px-5 py-2 bg-sky-700 hover:bg-sky-700 text-white font-semibold rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-1.5"
                 >
                   <Save size={16} />
                   <span>{isSavingWs ? 'Đang lưu...' : 'Lưu Cấu hình Phân xưởng'}</span>

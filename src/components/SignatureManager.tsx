@@ -7,6 +7,7 @@ interface SignatureManagerProps {
   staffList: string[];
   signatures: Record<string, string>;
   onSignaturesChange: (signatures: Record<string, string>) => void;
+  workshopId: string;
 }
 
 // Utility function to normalize strings for comparison (strips accents, lowercases)
@@ -18,7 +19,7 @@ function normalizeName(str: string): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
-export default function SignatureManager({ staffList, signatures, onSignaturesChange }: SignatureManagerProps) {
+export default function SignatureManager({ staffList, signatures, onSignaturesChange, workshopId }: SignatureManagerProps) {
   const [saving, setSaving] = useState<string | null>(null);
   const [isBatchProcessing, setIsBatchProcessing] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -43,7 +44,7 @@ export default function SignatureManager({ staffList, signatures, onSignaturesCh
         const res = await fetch('/api/signatures', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, data: base64 })
+          body: JSON.stringify({ name, data: base64, workshopId })
         });
         if (res.ok) {
           onSignaturesChange({ ...signatures, [name]: base64 });
@@ -114,7 +115,7 @@ export default function SignatureManager({ staffList, signatures, onSignaturesCh
         const res = await fetch('/api/signatures/batch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: matchedItems })
+          body: JSON.stringify({ items: matchedItems, workshopId })
         });
 
         if (res.ok) {
@@ -156,7 +157,7 @@ export default function SignatureManager({ staffList, signatures, onSignaturesCh
       await fetch('/api/signatures', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, data: '' })
+        body: JSON.stringify({ name, data: '', workshopId })
       });
       setNotice({ type: 'info', text: `Đã xóa chữ ký của "${name}".` });
     } catch (e) {
@@ -251,11 +252,11 @@ export default function SignatureManager({ staffList, signatures, onSignaturesCh
                   {name}
                 </span>
                 {hasSig ? (
-                  <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
                     <CheckCircle2 size={11} /> Đã có
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 text-[10px] font-semibold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
                     Chưa có
                   </span>
                 )}

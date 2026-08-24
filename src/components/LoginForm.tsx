@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Lock, ArrowRight, Eye, EyeOff, Sparkles, UserPlus, Building2, X } from 'lucide-react';
-import { UserAccount, Workshop } from '../types/auth';
+import { UserAccount } from '../types/auth';
 
 interface LoginFormProps {
   onLoginSuccess: (user: UserAccount) => void;
@@ -19,16 +19,19 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
   const [showCreateAdminModal, setShowCreateAdminModal] = useState(false);
   const [newAdminUsername, setNewAdminUsername] = useState('');
   const [newAdminPassword, setNewAdminPassword] = useState('123456');
-  const [newAdminFullName, setNewAdminFullName] = useState('');
-  const [newWsOption, setNewWsOption] = useState<'new' | 'existing'>('new');
   const [newWsName, setNewWsName] = useState('');
   const [newWsCode, setNewWsCode] = useState('');
-  const [newWsDesc, setNewWsDesc] = useState('');
-  const [selectedWsId, setSelectedWsId] = useState('');
-  const [existingWorkshops, setExistingWorkshops] = useState<Workshop[]>([]);
-  const [loadingWorkshops, setLoadingWorkshops] = useState(false);
+  const [newNotifyEmail, setNewNotifyEmail] = useState('');
+  const [newCompanyName, setNewCompanyName] = useState('CÔNG TY THỦY ĐIỆN IALY');
   const [creatingAdmin, setCreatingAdmin] = useState(false);
   const [modalMsg, setModalMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // The server only accepts unauthenticated account creation while no account exists.
+  // Hide the entry point once that window has closed so it cannot mislead.
+
+  useEffect(() => {
+    fetch('/api/setup/status')
+      .then(r => r.json())
+  }, []);
 
   useEffect(() => {
     try {
@@ -44,28 +47,11 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
     }
   }, []);
 
-  const fetchExistingWorkshops = async () => {
-    setLoadingWorkshops(true);
-    try {
-      const res = await fetch('/api/workshops');
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        setExistingWorkshops(data);
-        if (data.length > 0 && !selectedWsId) {
-          setSelectedWsId(data[0].id);
-        }
-      }
-    } catch (err) {
-      console.error('Lỗi tải danh sách phân xưởng:', err);
-    } finally {
-      setLoadingWorkshops(false);
-    }
-  };
 
   const handleCreateAdminAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newAdminUsername.trim() || !newAdminFullName.trim()) {
-      setModalMsg({ type: 'error', text: 'Vui lòng nhập Tên đăng nhập và Họ tên Quản trị viên.' });
+    if (!newAdminUsername.trim()) {
+      setModalMsg({ type: 'error', text: 'Vui lòng nhập Tên đăng nhập.' });
       return;
     }
 
@@ -73,79 +59,33 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
     setModalMsg(null);
 
     try {
-      let targetWsId = selectedWsId;
-
-      if (newWsOption === 'new') {
-        if (!newWsName.trim()) {
-          throw new Error('Vui lòng nhập Tên Phân xưởng mới.');
-        }
-
-        const wsRes = await fetch('/api/workshops', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: newWsName.trim(),
-            code: newWsCode.trim() || newWsName.substring(0, 5).toUpperCase(),
-            description: newWsDesc.trim() || `Phân xưởng ${newWsName.trim()}`,
-            config: {
-              companyName: 'CÔNG TY THỦY ĐIỆN IALY',
-              headerWorkshopName: newWsName.trim().toUpperCase(),
-              documentCodeSuffix: newWsCode ? `/${newWsCode.trim()}` : '/PX',
-              recipientWorkshopName: newWsName.trim(),
-              shortWorkshopName: newWsName.trim(),
-              soVanBan: '01/PX',
-              nguoiKy: 'Lãnh đạo Phân xưởng',
-              chucVuNguoiKy: 'Quản đốc Phân xưởng',
-              zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
-            }
-          })
-        });
-
-        const wsData = await wsRes.json();
-        if (!wsRes.ok || !wsData.success) {
-          throw new Error(wsData.error || 'Lỗi khi tạo Phân xưởng mới.');
-        }
-        targetWsId = wsData.workshop.id;
-      } else {
-        if (!targetWsId && existingWorkshops.length > 0) {
-          targetWsId = existingWorkshops[0].id;
-        }
-        if (!targetWsId) {
-          throw new Error('Vui lòng chọn một Phân xưởng hợp lệ.');
-        }
+      if (!newWsName.trim()) {
+        throw new Error('Vui lòng nhập Tên Phân xưởng mới.');
+      }
+      if (!newCompanyName.trim()) {
+        throw new Error('Vui lòng nhập Tên Công ty.');
       }
 
-      // Step 2: Create Admin Account
-      const accRes = await fetch('/api/accounts', {
+      // One server call creates the workshop, the account and the session together.
+      // The server fixes the role at workshop_admin and ignores anything sent here,
+      // so signing up can never hand out Super Admin.
+      const regRes = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: newAdminUsername.trim(),
-          password: newAdminPassword.trim() || '123456',
-          fullName: newAdminFullName.trim(),
-          role: 'workshop_admin',
-          workshopId: targetWsId
+          password: newAdminPassword.trim(),
+
+          workshopName: newWsName.trim(),
+          workshopCode: newWsCode.trim(),
+          companyName: newCompanyName.trim(),
+          notifyEmail: newNotifyEmail.trim()
         })
       });
 
-      const accData = await accRes.json();
-      if (!accRes.ok || !accData.success) {
-        throw new Error(accData.error || 'Lỗi khi tạo tài khoản Admin Phân xưởng.');
-      }
-
-      // Step 3: Auto login as newly created Admin account
-      const loginRes = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: newAdminUsername.trim(),
-          password: newAdminPassword.trim() || '123456'
-        })
-      });
-
-      const loginData = await loginRes.json();
-      if (!loginRes.ok || !loginData.success || !loginData.user) {
-        throw new Error('Đã tạo tài khoản thành công! Vui lòng đăng nhập với mật khẩu vừa tạo.');
+      const loginData = await regRes.json();
+      if (!regRes.ok || !loginData.success || !loginData.user) {
+        throw new Error(loginData.error || 'Không tạo được tài khoản.');
       }
 
       localStorage.setItem('auth_user', JSON.stringify(loginData.user));
@@ -313,16 +253,15 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
           )}
         </button>
 
-        {/* Option to create a new Workshop Admin Account */}
+        {/* Open to anyone: the server pins the new account to workshop_admin. */}
         <div className="pt-2 text-center border-t border-slate-100/80 mt-3">
           <button
             type="button"
             onClick={() => {
               setShowCreateAdminModal(true);
               setModalMsg(null);
-              fetchExistingWorkshops();
             }}
-            className="inline-flex items-center gap-2 text-[14px] font-bold text-[#00529c] hover:text-[#003d75] hover:underline cursor-pointer transition-all py-1.5 px-3 rounded-xl hover:bg-slate-50"
+            className="inline-flex items-center gap-2 text-[15px] font-bold text-[#00529c] hover:text-[#003d75] hover:underline cursor-pointer transition-all py-1.5 px-3 rounded-xl hover:bg-slate-50"
           >
             <Sparkles size={16} className="text-amber-500 animate-pulse shrink-0" />
             <span>Tạo tài khoản Admin Phân xưởng </span>
@@ -400,19 +339,6 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
                     />
                   </div>
 
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Họ và tên Quản trị viên *
-                    </label>
-                    <input
-                      type="text"
-                      value={newAdminFullName}
-                      onChange={(e) => setNewAdminFullName(e.target.value)}
-                      placeholder="ví dụ: Nguyễn Văn Quản Lý"
-                      className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#00529c]/20"
-                      required
-                    />
-                  </div>
                 </div>
               </div>
 
@@ -421,36 +347,26 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
                 <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                   <div className="flex items-center gap-2 font-bold text-slate-800 text-sm">
                     <Building2 size={16} className="text-[#00529c]" />
-                    <span>2. Chọn hoặc Tạo Phân xưởng</span>
+                    <span>2. Thông tin Phân xưởng mới</span>
                   </div>
 
-                  <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200">
-                    <button
-                      type="button"
-                      onClick={() => setNewWsOption('new')}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                        newWsOption === 'new' ? 'bg-[#00529c] text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
-                      }`}
-                    >
-                      ➕ Phân xưởng mới
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setNewWsOption('existing');
-                        fetchExistingWorkshops();
-                      }}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                        newWsOption === 'existing' ? 'bg-[#00529c] text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
-                      }`}
-                    >
-                      🏢 Chọn sẵn
-                    </button>
-                  </div>
                 </div>
 
-                {newWsOption === 'new' ? (
+                {(
+
                   <div className="space-y-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Tên Công ty *</label>
+                      <input
+                        type="text"
+                        value={newCompanyName}
+                        onChange={(e) => setNewCompanyName(e.target.value)}
+                        placeholder="ví dụ: CÔNG TY THỦY ĐIỆN IALY"
+                        className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#00529c]/20"
+                        required
+                      />
+                    </div>
+
                     <div>
                       <label className="block font-semibold text-slate-700 mb-1">Tên Phân xưởng mới *</label>
                       <input
@@ -459,7 +375,7 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
                         onChange={(e) => setNewWsName(e.target.value)}
                         placeholder="ví dụ: Phân xưởng Vận hành Pleikrông"
                         className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#00529c]/20"
-                        required={newWsOption === 'new'}
+                        required
                       />
                     </div>
 
@@ -475,36 +391,21 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
                         />
                       </div>
 
-                      <div>
-                        <label className="block font-semibold text-slate-700 mb-1">Mô tả ngắn</label>
-                        <input
-                          type="text"
-                          value={newWsDesc}
-                          onChange={(e) => setNewWsDesc(e.target.value)}
-                          placeholder="Nhà máy thủy điện..."
-                          className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#00529c]/20"
-                        />
-                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Danh sách Phân xưởng *</label>
-                    {loadingWorkshops ? (
-                      <div className="py-3 text-slate-400 font-medium text-center">Đang tải danh sách phân xưởng...</div>
-                    ) : (
-                      <select
-                        value={selectedWsId}
-                        onChange={(e) => setSelectedWsId(e.target.value)}
-                        className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#00529c]/20"
-                      >
-                        {existingWorkshops.map(ws => (
-                          <option key={ws.id} value={ws.id}>
-                            {ws.name} ({ws.code})
-                          </option>
-                        ))}
-                      </select>
-                    )}
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Email nhận thông báo</label>
+                      <input
+                        type="text"
+                        value={newNotifyEmail}
+                        onChange={(e) => setNewNotifyEmail(e.target.value)}
+                        placeholder="vd: quandoc@gmail.com"
+                        className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#00529c]/20"
+                      />
+                      <span className="text-[11px] text-slate-500 italic mt-1 block">
+                        * Mỗi khi có đơn nghỉ phép mới, hệ thống sẽ gửi thông báo tới email này.
+                      </span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -552,5 +453,3 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
     </div>
   );
 }
-
-

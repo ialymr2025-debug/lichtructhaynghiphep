@@ -92,7 +92,7 @@ export default function UserHeaderBar({
             <div>
               <div className="font-bold text-slate-100 flex items-center gap-1.5">
                 <span>{user.fullName}</span>
-                <span className={`text-[10px] font-extrabold px-1.5 py-0.2 rounded-md ${
+                <span className={`text-[11px] font-extrabold px-1.5 py-0.2 rounded-md ${
                   isSuperAdmin 
                     ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' 
                     : isWorkshopAdmin 

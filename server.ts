@@ -5,14 +5,18 @@ import { google } from "googleapis";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import https from "https";
+import http from "http";
 
 import fs from "fs";
-import admin from "firebase-admin";
-import { getFirestore } from "firebase-admin/firestore";
+import crypto from "crypto";
+import nodemailer from "nodemailer";
+import { pool as sqlPool, initLeaveTables, calcTravelDays, calcEntitledDays, calcSeniority } from "./db";
+import { listWorkingShifts, allocateLeaveDays, type ShiftConfig } from "./leaveCalc";
 dotenv.config();
 
-// Helper to send notification to Zalo personal webhook
-async function sendZaloNotification(data: {
+initLeaveTables().catch((e: any) => console.error("Failed to initialize SQL leave tables:", e.message));
+
+type LeaveNotifyData = {
   name: string;
   chucDanh: string;
   kip: string;
@@ -23,33 +27,14 @@ async function sendZaloNotification(data: {
   location: string;
   dateStr: string;
   leaveBalance?: { entitled: string; used: string; remaining: string } | null;
-}) {
-  let webhookUrl = process.env.ZALO_WEBHOOK_URL || "https://vhialy.dpdns.org/webhook/notify";
-  
-  if (!process.env.ZALO_WEBHOOK_URL) {
-    try {
-      const db = getFirestoreInstance();
-      const doc = await db.collection("config").doc("app_settings").get();
-      if (doc.exists) {
-        const docData = doc.data();
-        if (docData && docData.config && docData.config.zaloWebhookUrl) {
-          let url = docData.config.zaloWebhookUrl;
-          if (
-            url.includes("cookies-blue-pen-bikini.trycloudflare.com") || 
-            url.includes("specialists-intro-exterior-advocacy.trycloudflare.com") ||
-            url.includes("committed-intellectual-lunch-clone.trycloudflare.com")
-          ) {
-            url = "https://vhialy.dpdns.org/webhook/notify";
-          }
-          webhookUrl = url;
-        }
-      }
-    } catch (dbErr: any) {
-      console.log("Unable to load zaloWebhookUrl from Firestore, using default:", dbErr.message);
-    }
-  }
-  
-  let textMessage = `CÓ ĐƠN NGHỈ PHÉP MỚI 
+};
+
+// `to` records where the message was actually addressed, so a wrong-recipient report can
+// be answered from the response itself instead of guessing at the stored config.
+type NotifyResult = { ok: boolean; skipped?: boolean; error?: string; to?: string };
+
+function buildNotifyText(data: LeaveNotifyData): string {
+  let text = `CÓ ĐƠN NGHỈ PHÉP MỚI
 • Họ và tên: ${data.name}
 • Chức danh: ${data.chucDanh}
 • Kíp: Kíp ${data.kip}
@@ -57,12 +42,35 @@ async function sendZaloNotification(data: {
 • Lý do: ${data.reason || "Giải quyết việc riêng gia đình"}`;
 
   if (data.leaveBalance) {
-    textMessage += `
+    text += `
 • Phép được hưởng: ${data.leaveBalance.entitled} ngày
 • Phép đã nghỉ: ${data.leaveBalance.used} ngày
 • Phép còn lại: ${data.leaveBalance.remaining} ngày`;
   }
+  return text;
+}
 
+// Sends to the webhook configured on THIS workshop's own row (workshops.config.zaloWebhookUrl),
+// not the old global app_settings document — previously every workshop silently shared one
+// webhook regardless of what each admin configured. Returns an honest result instead of firing
+// and forgetting, so the caller can report what actually happened rather than assuming success.
+async function sendZaloNotification(workshopId: string | undefined, data: LeaveNotifyData): Promise<NotifyResult> {
+  let webhookUrl = process.env.ZALO_WEBHOOK_URL || "";
+
+  if (!webhookUrl && workshopId) {
+    try {
+      const result = await sqlPool.query(`SELECT config FROM workshops WHERE id = $1`, [workshopId]);
+      webhookUrl = result.rows[0]?.config?.zaloWebhookUrl || "";
+    } catch (dbErr: any) {
+      console.log("Unable to load workshop zaloWebhookUrl:", dbErr.message);
+    }
+  }
+
+  if (!webhookUrl) {
+    return { ok: false, skipped: true, error: "Chưa cấu hình Zalo Webhook URL cho phân xưởng này." };
+  }
+
+  const textMessage = buildNotifyText(data);
   const payload = JSON.stringify({
     text: textMessage,
     message: textMessage,
@@ -81,201 +89,165 @@ async function sendZaloNotification(data: {
     }
   });
 
-  try {
-    const parsedUrl = new URL(webhookUrl);
+  return new Promise((resolve) => {
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(webhookUrl);
+    } catch (e: any) {
+      resolve({ ok: false, error: "Webhook URL không hợp lệ: " + e.message });
+      return;
+    }
+
+    // http:// was silently swallowed before (only https.request was ever used); pick the
+    // matching module so a plain-http webhook actually gets called instead of failing silently.
+    const transport = parsedUrl.protocol === "http:" ? http : https;
     const options = {
       hostname: parsedUrl.hostname,
+      port: parsedUrl.port || undefined,
       path: parsedUrl.pathname + parsedUrl.search,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(payload)
       },
-      timeout: 5000
+      timeout: 8000
     };
 
-    const req = https.request(options, (res) => {
+    const req = transport.request(options, (res) => {
       let body = "";
       res.on("data", (chunk) => { body += chunk; });
       res.on("end", () => {
+        const ok = (res.statusCode || 0) >= 200 && (res.statusCode || 0) < 300;
         console.log(`Zalo notification response (status ${res.statusCode}): ${body}`);
+        resolve(ok ? { ok: true } : { ok: false, error: `Webhook trả về mã lỗi ${res.statusCode}` });
       });
     });
 
     req.on("error", (e: any) => {
       console.log("Zalo Webhook unreachable (e.g. offline tunnel or invalid URL):", e.message);
+      resolve({ ok: false, error: "Không kết nối được webhook: " + e.message });
     });
 
     req.on("timeout", () => {
       req.destroy();
-      console.log("Zalo notification request timed out");
+      resolve({ ok: false, error: "Webhook không phản hồi (hết thời gian chờ)." });
     });
 
     req.write(payload);
     req.end();
-  } catch (e: any) {
-    console.log("Failed to parse webhook URL or send Zalo notification:", e.message);
+  });
+}
+
+// Lazily created once and reused across requests; nodemailer keeps its own connection pool.
+let mailTransporter: nodemailer.Transporter | null | undefined;
+function getMailTransporter(): nodemailer.Transporter | null {
+  if (mailTransporter !== undefined) return mailTransporter;
+  const user = process.env.GMAIL_USER;
+  const pass = process.env.GMAIL_APP_PASSWORD;
+  if (!user || !pass) {
+    console.log("GMAIL_USER/GMAIL_APP_PASSWORD not set — email notifications disabled.");
+    mailTransporter = null;
+    return mailTransporter;
   }
+  mailTransporter = nodemailer.createTransport({ service: "gmail", auth: { user, pass } });
+  return mailTransporter;
 }
 
-let firebaseConfig: any = {};
-try {
-  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
-  if (fs.existsSync(configPath)) {
-    firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-  } else {
-    console.warn("firebase-applet-config.json not found, using environment variables");
-    firebaseConfig = {
-      projectId: process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || "default-project",
-    };
-  }
-} catch (e) {
-  console.error("Error loading firebase-applet-config.json:", e);
-  firebaseConfig = { projectId: process.env.FIREBASE_PROJECT_ID || "default-project" };
-}
+// Reads the recipient address(es) from THIS workshop's own config.notifyEmail (comma-separated),
+// mirroring how the Zalo webhook is scoped per workshop rather than sent from one shared address.
+async function sendEmailNotification(workshopId: string | undefined, data: LeaveNotifyData): Promise<NotifyResult> {
+  const transporter = getMailTransporter();
+  if (!transporter) return { ok: false, skipped: true, error: "Chưa cấu hình Gmail gửi thư trên máy chủ." };
+  if (!workshopId) return { ok: false, skipped: true, error: "Thiếu phân xưởng." };
 
-let loadedServiceAccount: any = null;
-try {
-  const saPath = path.join(process.cwd(), "service-account.json");
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    loadedServiceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  } else if (fs.existsSync(saPath)) {
-    loadedServiceAccount = JSON.parse(fs.readFileSync(saPath, "utf-8"));
-  }
-} catch (saErr: any) {
-  console.warn("Notice reading service-account.json:", saErr.message || saErr);
-}
-
-if (loadedServiceAccount) {
-  firebaseConfig.projectId = loadedServiceAccount.project_id || firebaseConfig.projectId;
-  firebaseConfig.firestoreDatabaseId = "(default)";
-}
-
-// Initialize Firebase Admin
-if (admin.apps.length === 0) {
+  let recipients = "";
   try {
-    if (loadedServiceAccount) {
-      admin.initializeApp({
-        credential: admin.credential.cert(loadedServiceAccount),
-        projectId: loadedServiceAccount.project_id || firebaseConfig.projectId,
-      });
-      console.log(`Firebase Admin initialized with Service Account for project: ${loadedServiceAccount.project_id}`);
-    } else {
-      admin.initializeApp({
-        projectId: firebaseConfig.projectId,
-      });
-      console.log("Firebase Admin initialized with default credentials");
-    }
-  } catch (e) {
-    console.error("Firebase Admin initialization error:", e);
+    const result = await sqlPool.query(`SELECT config FROM workshops WHERE id = $1`, [workshopId]);
+    recipients = String(result.rows[0]?.config?.notifyEmail || "").trim();
+  } catch (dbErr: any) {
+    return { ok: false, error: "Không đọc được cấu hình email: " + dbErr.message };
+  }
+  if (!recipients) {
+    return { ok: false, skipped: true, error: "Chưa cấu hình Email nhận thông báo cho phân xưởng này." };
+  }
+
+  const textMessage = buildNotifyText(data);
+  const htmlMessage = textMessage
+    .split("\n")
+    .map((line) => `<p style="margin:0 0 4px">${line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</p>`)
+    .join("");
+
+  try {
+    await transporter.sendMail({
+      from: `"Hệ thống Lịch trực thay ca" <${process.env.GMAIL_USER}>`,
+      to: recipients,
+      subject: `Đơn nghỉ phép mới: ${data.name} (Kíp ${data.kip}, ${data.startDate} - ${data.endDate})`,
+      text: textMessage,
+      html: htmlMessage
+    });
+    console.log(`Email notification sent to: ${recipients} (workshop ${workshopId})`);
+    return { ok: true, to: recipients };
+  } catch (e: any) {
+    console.log("Failed to send email notification:", e.message);
+    return { ok: false, error: "Gửi email thất bại: " + e.message, to: recipients };
   }
 }
-// const firestore = admin.firestore(); // Initialize lazily
-let lastFirestoreError: string | null = null;
 
-const getFirestoreInstance = (useDefault = false) => {
+let lastDbError: string | null = null;
+
+// app_config replaces the old Firestore "config" collection: one row per document key.
+async function readConfig(key: string): Promise<any | null> {
   try {
-    const app = admin.app();
-    if (useDefault) {
-      return getFirestore(app);
-    }
-    
-    const dbId = process.env.FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
-    
-    if (dbId && dbId !== "(default)") {
-      // In firebase-admin, the signature is getFirestore(app, databaseId)
-      return getFirestore(app, dbId);
-    }
-    return getFirestore(app);
+    const result = await sqlPool.query(`SELECT value FROM app_config WHERE key = $1`, [key]);
+    lastDbError = null;
+    return result.rows[0]?.value ?? null;
   } catch (e: any) {
-    lastFirestoreError = `GetFirestore Error: ${e.message}`;
-    return getFirestore(admin.app());
+    lastDbError = `Read Error (${key}): ${e.message}`;
+    console.error(`Error reading app_config/${key}:`, e.message);
+    return null;
   }
-};
+}
+
+async function writeConfig(key: string, value: any): Promise<boolean> {
+  try {
+    await sqlPool.query(
+      `INSERT INTO app_config (key, value) VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [key, JSON.stringify(value)]
+    );
+    lastDbError = null;
+    return true;
+  } catch (e: any) {
+    lastDbError = `Write Error (${key}): ${e.message}`;
+    console.error(`Error writing app_config/${key}:`, e.message);
+    return false;
+  }
+}
 
 const saveTokens = async (newTokens: any) => {
-  const trySave = async (db: any) => {
-    const docRef = db.collection("config").doc("google_auth");
-    const existingDoc = await docRef.get();
-    let finalTokens = { ...newTokens };
-    
-    if (existingDoc.exists) {
-      const existingTokens = existingDoc.data()?.tokens;
-      if (!finalTokens.refresh_token && existingTokens?.refresh_token) {
-        finalTokens.refresh_token = existingTokens.refresh_token;
-      }
-    }
+  const existing = await readConfig("google_auth");
+  const finalTokens = { ...newTokens };
 
-    await docRef.set({
-      tokens: finalTokens,
-      updatedAt: new Date().toISOString()
-    });
-  };
-
-  try {
-    try {
-      await trySave(getFirestoreInstance());
-      lastFirestoreError = null;
-    } catch (e: any) {
-      console.warn("Primary DB save failed, trying fallback:", e.message);
-      if (e.code === 5 || e.message?.includes("NOT_FOUND") || e.message?.includes("not found")) {
-        await trySave(getFirestoreInstance(true));
-        lastFirestoreError = null;
-      } else {
-        throw e;
-      }
-    }
-  } catch (e: any) {
-    lastFirestoreError = `Save Error: ${e.message}`;
-    console.warn("Notice: Save tokens to Firestore notice:", e.message);
+  // Google only returns refresh_token on first consent, so never lose the stored one.
+  if (!finalTokens.refresh_token && existing?.tokens?.refresh_token) {
+    finalTokens.refresh_token = existing.tokens.refresh_token;
   }
+
+  await writeConfig("google_auth", { tokens: finalTokens, updatedAt: new Date().toISOString() });
 };
 
 const loadTokens = async () => {
-  const tryLoad = async (db: any) => {
-    const doc = await db.collection("config").doc("google_auth").get();
-    if (doc.exists) {
-      return doc.data()?.tokens || null;
-    }
-    return null;
-  };
-
-  try {
-    try {
-      const tokens = await tryLoad(getFirestoreInstance());
-      if (tokens) return tokens;
-    } catch (e: any) {
-      if (e.code === 5 || e.message?.includes("NOT_FOUND") || e.message?.includes("not found")) {
-        const tokens = await tryLoad(getFirestoreInstance(true));
-        if (tokens) return tokens;
-      }
-    }
-  } catch (e: any) {
-    lastFirestoreError = `Load Error: ${e.message}`;
-    console.warn("Notice: Load tokens from Firestore notice:", e.message);
-  }
-  return null;
+  const doc = await readConfig("google_auth");
+  return doc?.tokens || null;
 };
 
 const clearTokens = async () => {
-  const tryClear = async (db: any) => {
-    const docRef = db.collection("config").doc("google_auth");
-    await docRef.delete();
-  };
-
   try {
-    try {
-      await tryClear(getFirestoreInstance());
-      lastFirestoreError = null;
-    } catch (e: any) {
-      if (e.code === 5 || e.message?.includes("NOT_FOUND") || e.message?.includes("not found")) {
-        await tryClear(getFirestoreInstance(true));
-        lastFirestoreError = null;
-      }
-    }
+    await sqlPool.query(`DELETE FROM app_config WHERE key = 'google_auth'`);
+    lastDbError = null;
   } catch (e: any) {
-    lastFirestoreError = `Clear Error: ${e.message}`;
-    console.warn("Notice: Clear tokens from Firestore notice:", e.message);
+    lastDbError = `Clear Error: ${e.message}`;
+    console.error("Error clearing tokens:", e.message);
   }
 };
 
@@ -313,57 +285,42 @@ const PORT = 3000;
 app.use(express.json());
 app.use(cookieParser());
 
+// Registered here, before any route, because Express middleware only guards routes
+// declared after it. requireAuth itself is a hoisted function declaration.
+app.use(requireAuth);
+app.use(scopeWorkshopId);
+app.use(auditLog);
+
 // Debug routes early
 app.get("/api/debug/auth", async (req, res) => {
-  const firestoreTokens = await loadTokens();
-  let sa_project_id = "none";
-  try {
-    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-      sa_project_id = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT).project_id;
-    }
-  } catch (e) {}
-
+  const storedTokens = await loadTokens();
   res.json({
-    has_service_account: !!process.env.FIREBASE_SERVICE_ACCOUNT,
-    sa_project_id: sa_project_id,
-    config_project_id: firebaseConfig.projectId,
-    firestore_database_id: firebaseConfig.firestoreDatabaseId,
-    firestore_tokens_exist: !!firestoreTokens,
+    database: "supabase",
+    database_url_set: !!process.env.DATABASE_URL,
+    stored_tokens_exist: !!storedTokens,
     cookie_tokens_exist: !!req.cookies.google_tokens,
-    last_error: lastFirestoreError,
+    last_error: lastDbError,
     env_vars: {
       GOOGLE_CLIENT_ID: !!process.env.GOOGLE_CLIENT_ID,
       GOOGLE_CLIENT_SECRET: !!process.env.GOOGLE_CLIENT_SECRET,
-      APP_URL: process.env.APP_URL,
-      FIREBASE_DATABASE_ID: !!process.env.FIREBASE_DATABASE_ID
+      APP_URL: process.env.APP_URL
     }
   });
 });
 
 app.get("/api/debug/test-db", async (req, res) => {
   try {
-    const db = getFirestoreInstance();
-    await db.collection("config").doc("test_connection").set({
-      time: new Date().toISOString(),
-      status: "ok"
-    });
-    res.json({ success: true, message: "Ghi dữ liệu thành công vào Database chính!" });
+    const ok = await writeConfig("test_connection", { time: new Date().toISOString(), status: "ok" });
+    if (!ok) throw new Error(lastDbError || "unknown");
+    const counts = await sqlPool.query(
+      `SELECT (SELECT count(*) FROM signatures)::int AS signatures,
+              (SELECT count(*) FROM employees)::int AS employees,
+              (SELECT count(*) FROM leave_requests)::int AS leave_requests,
+              (SELECT count(*) FROM app_config)::int AS app_config`
+    );
+    res.json({ success: true, message: "Ghi dữ liệu thành công vào Supabase!", counts: counts.rows[0] });
   } catch (e: any) {
-    try {
-      const dbFallback = getFirestoreInstance(true);
-      await dbFallback.collection("config").doc("test_connection").set({
-        time: new Date().toISOString(),
-        status: "ok_fallback"
-      });
-      res.json({ success: true, message: "Ghi dữ liệu thành công vào Database mặc định (Fallback)!" });
-    } catch (fallbackErr: any) {
-      res.status(500).json({ 
-        success: false, 
-        primary_error: e.message,
-        fallback_error: fallbackErr.message,
-        code: fallbackErr.code
-      });
-    }
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -400,314 +357,524 @@ function removeVietnameseAccents(str: string): string {
     .trim();
 }
 
-function serializeForFirestore(obj: any): any {
-  if (obj === null || obj === undefined) return obj;
-  if (typeof obj !== 'object') return obj;
-
-  if (Array.isArray(obj)) {
-    if (obj.some(item => Array.isArray(item))) {
-      return JSON.stringify(obj);
-    }
-    return obj.map(serializeForFirestore);
-  }
-
-  const result: Record<string, any> = {};
-  for (const key of Object.keys(obj)) {
-    result[key] = serializeForFirestore(obj[key]);
-  }
-  return result;
-}
-
-function deserializeFromFirestore(obj: any): any {
-  if (obj === null || obj === undefined) return obj;
-  if (typeof obj === 'string') {
-    const trimmed = obj.trim();
-    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        return deserializeFromFirestore(parsed);
-      } catch (e) {
-        return obj;
-      }
-    }
-    return obj;
-  }
-  if (typeof obj !== 'object') return obj;
-
-  if (Array.isArray(obj)) {
-    return obj.map(deserializeFromFirestore);
-  }
-
-  const result: Record<string, any> = {};
-  for (const key of Object.keys(obj)) {
-    result[key] = deserializeFromFirestore(obj[key]);
-  }
-  return result;
-}
-
-const SHIFTS_CYCLE = [
-  ["N","C","O","K","O"],
-  ["K","O","N","C","O"],
-  ["C","O","K","O","N"],
-  ["O","N","C","O","K"],
-  ["O","K","O","N","C"]
-];
-const BASE_DATE_REF = new Date(2025, 9, 1); // 01/10/2025
-
-function xacDinhCaHelper(ngay: Date, kip: number): string {
-  if (!ngay || isNaN(ngay.getTime()) || kip < 1 || kip > 5) return 'O';
-  const d1 = new Date(ngay.getFullYear(), ngay.getMonth(), ngay.getDate());
-  const d2 = new Date(BASE_DATE_REF.getFullYear(), BASE_DATE_REF.getMonth(), BASE_DATE_REF.getDate());
-  const diffDays = Math.round((d1.getTime() - d2.getTime()) / 86400000);
-  const kipIdx = ((kip - 1) % 5 + 5) % 5;
-  const cycleIdx = ((diffDays % 5) + 5) % 5;
-  return SHIFTS_CYCLE[kipIdx][cycleIdx] || 'O';
-}
-
-function calculateLeaveDays(startDateStr?: string, endDateStr?: string, kip?: number | string): number {
-  if (!startDateStr) return 1;
-  
-  const parseVN = (s: string) => {
-    if (!s) return null;
-    const str = String(s).trim();
-    // Handle Excel serial date numbers (e.g. 45500)
-    if (/^\d{5}(\.\d+)?$/.test(str)) {
-      const serial = parseFloat(str);
-      const utc_days = Math.floor(serial - 25569);
-      const utc_value = utc_days * 86400;
-      return new Date(utc_value * 1000);
-    }
-
-    const parts = str.split(/[\/\-\.]/);
-    if (parts.length === 3) {
-      if (parts[0].length === 4) {
-        // YYYY-MM-DD
-        const y = parseInt(parts[0], 10);
-        const m = parseInt(parts[1], 10) - 1;
-        const d = parseInt(parts[2], 10);
-        if (!isNaN(d) && !isNaN(m) && !isNaN(y)) return new Date(y, m, d);
-      } else {
-        // DD/MM/YYYY
-        const d = parseInt(parts[0], 10);
-        const m = parseInt(parts[1], 10) - 1;
-        const y = parseInt(parts[2], 10);
-        if (!isNaN(d) && !isNaN(m) && !isNaN(y)) return new Date(y, m, d);
-      }
-    }
-    const d = new Date(str);
-    return isNaN(d.getTime()) ? null : d;
-  };
-
+async function fetchLeaveBalanceHelper(name: string, workshopId: string, year?: string): Promise<{ entitled: string; used: string; remaining: string } | null> {
   try {
-    const start = parseVN(startDateStr);
-    const end = endDateStr ? parseVN(endDateStr) : start;
-    if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) return 1;
+    const quotas = await getQuotaByYear(name, workshopId);
+    const targetYear = year || String(new Date().getFullYear());
+    const q = quotas[targetYear];
+    if (!q) return null;
 
-    // Sanity check: Leave requests year must be realistic (>= 2020)
-    const currentYear = new Date().getFullYear();
-    if (start.getFullYear() < 2020 || start.getFullYear() > currentYear + 2) {
-      return 1;
-    }
-
-    let numKip = 0;
-    if (typeof kip === 'number') numKip = kip;
-    else if (typeof kip === 'string') {
-      const match = kip.match(/\d+/);
-      if (match) numKip = parseInt(match[0], 10);
-    }
-
-    if (numKip >= 1 && numKip <= 5) {
-      let workShifts = 0;
-      let cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
-      const endClean = new Date(end.getFullYear(), end.getMonth(), end.getDate());
-      let maxDays = 60;
-      while (cur <= endClean && maxDays > 0) {
-        maxDays--;
-        const shiftType = xacDinhCaHelper(cur, numKip);
-        if (shiftType !== 'O') {
-          workShifts++;
-        }
-        cur.setDate(cur.getDate() + 1);
-      }
-      return workShifts;
-    }
-
-    const diffTime = Math.abs(end.getTime() - start.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-    if (diffDays > 30) return 1;
-    return diffDays > 0 ? diffDays : 1;
-  } catch (e) {
-    return 1;
-  }
-}
-
-function calculateLeaveBalanceLogic(
-  oldLeavesInput: number | string,
-  newLeavesInput: number | string,
-  usedLeavesInput: number | string,
-  currentDateObj: Date = new Date()
-) {
-  const oldLeaves = Math.max(0, parseFloat(String(oldLeavesInput)) || 0);
-  const newLeaves = Math.max(0, parseFloat(String(newLeavesInput)) || 12);
-  const usedLeaves = Math.max(0, parseFloat(String(usedLeavesInput)) || 0);
-
-  const month = currentDateObj.getMonth() + 1; // 1..12
-  const isBeforeMarch31 = month <= 3;
-
-  let remaining = 0;
-  let note = "";
-
-  if (isBeforeMarch31) {
-    const totalEntitled = oldLeaves + newLeaves;
-    remaining = Math.max(0, totalEntitled - usedLeaves);
-    
-    if (oldLeaves > 0) {
-      if (usedLeaves < oldLeaves) {
-        note = `Đang ưu tiên trừ phép năm cũ (còn ${oldLeaves - usedLeaves}/${oldLeaves} ngày năm cũ, hạn đến 31/03).`;
-      } else {
-        note = `Đã dùng hết ${oldLeaves} ngày phép năm cũ trong Q1. Số ngày nghỉ còn lại trừ vào phép năm mới.`;
-      }
-    } else {
-      note = `Không có phép năm cũ. Trừ trực tiếp vào phép năm mới (${newLeaves} ngày).`;
-    }
-  } else {
-    const usedDeductedFromNew = Math.max(0, usedLeaves - oldLeaves);
-    remaining = Math.max(0, newLeaves - usedDeductedFromNew);
-
-    if (oldLeaves > 0) {
-      const expiredOldLeaves = Math.max(0, oldLeaves - usedLeaves);
-      if (expiredOldLeaves > 0) {
-        note = `Phép năm cũ (${expiredOldLeaves} ngày chưa dùng) đã tự động hết hạn từ 31/03. Đang tính phép năm mới (${newLeaves} ngày).`;
-      } else {
-        note = `Phép năm cũ đã dùng hết từ Q1. Chỉ còn tính phép năm mới.`;
-      }
-    } else {
-      note = `Tính theo tiêu chuẩn phép năm hiện tại (${newLeaves} ngày).`;
-    }
-  }
-
-  return {
-    oldLeaves,
-    newLeaves,
-    usedLeaves,
-    entitled: isBeforeMarch31 ? (oldLeaves + newLeaves) : newLeaves,
-    remaining,
-    isBeforeMarch31,
-    note
-  };
-}
-
-async function fetchLeaveBalanceHelper(name: string, customSheetId?: string): Promise<{ entitled: string; used: string; remaining: string; note?: string; oldLeaves?: string; newLeaves?: string } | null> {
-  try {
-    const oauth2Client = getOAuth2Client();
-    let tokens = await loadTokens();
-    if (!tokens) return null;
-
-    oauth2Client.setCredentials(tokens);
-    const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-    const spreadsheetId = customSheetId ? extractSpreadsheetId(customSheetId) : resolveSpreadsheetId();
-
-    let targetSheetName = "Số ngày phép";
-    try {
-      const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-      const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
-      targetSheetName = sheetNames.find(n => n?.toLowerCase().trim() === "số ngày phép") || sheetNames[0] || "Số ngày phép";
-    } catch (e) {}
-
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `'${targetSheetName}'!A1:I1000`
-    });
-
-    const rows = response.data.values;
-    if (!rows || rows.length === 0) return null;
-
-    const targetName = String(name).trim();
-    const targetNormalized = removeVietnameseAccents(targetName);
-
-    let matchedRow: any[] | null = null;
-    
-    // First pass: exact match
-    for (const row of rows) {
-      if (!row || row.length === 0) continue;
-      for (let colIdx = 0; colIdx < Math.min(row.length, 4); colIdx++) {
-        const cellVal = String(row[colIdx] || '').trim().toLowerCase();
-        if (cellVal === targetName.toLowerCase()) {
-          matchedRow = row;
-          break;
-        }
-      }
-      if (matchedRow) break;
-    }
-
-    // Second pass: normalized match
-    if (!matchedRow) {
-      for (const row of rows) {
-        if (!row || row.length === 0) continue;
-        for (let colIdx = 0; colIdx < Math.min(row.length, 4); colIdx++) {
-          const cellVal = String(row[colIdx] || '').trim();
-          if (removeVietnameseAccents(cellVal) === targetNormalized) {
-            matchedRow = row;
-            break;
-          }
-        }
-        if (matchedRow) break;
-      }
-    }
-
-    // Dynamic header column mapping
-    const headerRow = rows[0] || [];
-    let oldLeavesCol = 4; // Column E
-    let newLeavesCol = 5; // Column F (Phép năm mới được hưởng)
-    let usedCol = 6;      // Column G (Phép đã nghỉ năm)
-    let remainingCol = 7; // Column H (Phép còn lại hiện tại)
-
-    for (let c = 0; c < headerRow.length; c++) {
-      const hText = removeVietnameseAccents(String(headerRow[c] || '')).toLowerCase();
-      if (hText.includes("nam cu") || hText.includes("phep nam cu")) {
-        oldLeavesCol = c;
-      } else if (hText.includes("nam moi") || hText.includes("duoc huong") || hText.includes("dinh muc")) {
-        newLeavesCol = c;
-      } else if (hText.includes("da nghi")) {
-        usedCol = c;
-      } else if (hText.includes("con lai")) {
-        remainingCol = c;
-      }
-    }
-
-    if (matchedRow) {
-      const oldLeaves = oldLeavesCol >= 0 ? (parseFloat(String(matchedRow[oldLeavesCol] || '0').trim()) || 0) : 0;
-      const newLeaves = parseFloat(String(matchedRow[newLeavesCol] || '12').trim()) || 12;
-      const used = parseFloat(String(matchedRow[usedCol] || '0').trim()) || 0;
-      const calc = calculateLeaveBalanceLogic(oldLeaves, newLeaves, used);
-      const remaining = (matchedRow[remainingCol] !== undefined && String(matchedRow[remainingCol]).trim() !== '')
-        ? String(matchedRow[remainingCol]).trim()
-        : String(calc.remaining);
-
-      return { 
-        entitled: String(calc.entitled), 
-        used: String(calc.usedLeaves), 
-        remaining,
-        note: calc.note,
-        oldLeaves: String(calc.oldLeaves),
-        newLeaves: String(calc.newLeaves)
-      };
-    }
+    return {
+      entitled: String(q.entitled + q.travelDays),
+      used: String(q.used),
+      remaining: String(q.remaining)
+    };
   } catch (err: any) {
-    console.error("fetchLeaveBalanceHelper error:", err.message);
+    console.error("fetchLeaveBalanceHelper (SQL) error:", err.message);
   }
   return null;
 }
 
+// The rota (base date + shift matrix) is configured per workshop, stored on the workshop's
+// own row; falls back to the legacy global app_settings for requests with no workshop yet.
+async function loadShiftConfig(workshopId?: string): Promise<ShiftConfig | undefined> {
+  try {
+    if (workshopId) {
+      const ws = await sqlPool.query(`SELECT config FROM workshops WHERE id = $1`, [workshopId]);
+      const schedule = ws.rows[0]?.config?.shiftSchedule;
+      if (schedule) return { baseDate: schedule.baseDate, shiftsMatrix: schedule.shiftsMatrix };
+    }
+    const doc = await readConfig("app_settings");
+    const schedule = doc?.config?.shiftSchedule;
+    if (!schedule) return undefined;
+    return { baseDate: schedule.baseDate, shiftsMatrix: schedule.shiftsMatrix };
+  } catch (e: any) {
+    console.log("Could not load shift config, using defaults:", e.message);
+    return undefined;
+  }
+}
+
+const toNum = (v: any): number => {
+  const n = parseFloat(String(v ?? "").replace(",", "."));
+  return isNaN(n) ? 0 : n;
+};
+
+export interface YearQuota {
+  year: string;
+  entitled: number;
+  travelDays: number;
+  used: number;
+  remaining: number;
+  seniority?: number;
+  source?: "seniority" | "manual";
+}
+
+// Build the per-year leave account for one person: allowance + travel days earned, minus days taken.
+// Scoped to a single workshop so two people who happen to share a name in different
+// workshops never share a leave balance.
+async function getQuotaByYear(name: string, workshopId: string, excludeLeaveId?: string, extraYears: string[] = []): Promise<Record<string, YearQuota>> {
+  // Entitlement normally comes from the hire year, recomputed for whichever year is asked about.
+  const employee = await sqlPool.query(
+    `SELECT hire_year, base_days FROM employees WHERE workshop_id = $1 AND lower(trim(name)) = lower(trim($2))`,
+    [workshopId, name]
+  );
+  const emp = employee.rows[0];
+
+  const quotas: Record<string, YearQuota> = {};
+  const ensure = (year: string): YearQuota => {
+    if (!quotas[year]) {
+      const q: YearQuota = { year, entitled: 0, travelDays: 0, used: 0, remaining: 0 };
+      if (emp) {
+        q.entitled = calcEntitledDays(Number(emp.base_days), Number(emp.hire_year), Number(year));
+        q.seniority = calcSeniority(Number(emp.hire_year), Number(year));
+        q.source = "seniority";
+      }
+      quotas[year] = q;
+    }
+    return quotas[year];
+  };
+
+  if (emp) {
+    const thisYear = new Date().getFullYear();
+    for (let y = Math.max(Number(emp.hire_year), thisYear - 2); y <= thisYear + 1; y++) ensure(String(y));
+  }
+  for (const y of extraYears) if (y) ensure(String(y));
+
+  // A row in leave_balances overrides the computed figure for that year.
+  const balances = await sqlPool.query(
+    `SELECT year, entitled FROM leave_balances WHERE workshop_id = $1 AND lower(trim(name)) = lower(trim($2))`,
+    [workshopId, name]
+  );
+  for (const row of balances.rows) {
+    const q = ensure(String(row.year));
+    q.entitled = toNum(row.entitled);
+    q.source = "manual";
+  }
+
+  const travel = await sqlPool.query(
+    `SELECT leave_year, SUM(travel_days) AS days FROM leave_requests
+     WHERE workshop_id = $1 AND lower(trim(name)) = lower(trim($2)) AND travel_days > 0
+       AND ($3::text IS NULL OR id <> $3)
+     GROUP BY leave_year`,
+    [workshopId, name, excludeLeaveId || null]
+  );
+  for (const row of travel.rows) ensure(String(row.leave_year)).travelDays = toNum(row.days);
+
+  const used = await sqlPool.query(
+    `SELECT a.leave_year, SUM(a.days) AS days FROM leave_allocations a
+     JOIN leave_requests r ON r.id = a.leave_id
+     WHERE r.workshop_id = $1 AND lower(trim(r.name)) = lower(trim($2))
+       AND ($3::text IS NULL OR r.id <> $3)
+     GROUP BY a.leave_year`,
+    [workshopId, name, excludeLeaveId || null]
+  );
+  for (const row of used.rows) ensure(String(row.leave_year)).used = toNum(row.days);
+
+  for (const q of Object.values(quotas)) q.remaining = q.entitled + q.travelDays - q.used;
+  return quotas;
+}
+
+// Look up the road distance from Pleiku to a location, matching with or without accents.
+async function lookupDistanceKm(location: string): Promise<number | null> {
+  const target = String(location || "").trim();
+  if (!target) return null;
+
+  try {
+    const result = await sqlPool.query(`SELECT name, distance_km FROM location_distances`);
+    const targetNormalized = removeVietnameseAccents(target);
+
+    let matched = result.rows.find((r: any) => String(r.name || '').trim().toLowerCase() === target.toLowerCase());
+    if (!matched) {
+      matched = result.rows.find((r: any) => removeVietnameseAccents(String(r.name || '').trim()) === targetNormalized);
+    }
+    // Fall back to a contains match so "Huyện X, Nghệ An" still resolves to "Nghệ An"
+    if (!matched) {
+      matched = result.rows.find((r: any) => targetNormalized.includes(removeVietnameseAccents(String(r.name || '').trim())));
+    }
+
+    return matched ? Number(matched.distance_km) : null;
+  } catch (err: any) {
+    console.error("lookupDistanceKm error:", err.message);
+    return null;
+  }
+}
+
+// The regulation grants travel days once per leave year, so an earlier grant blocks a new one.
+async function findExistingTravelDays(name: string, workshopId: string, leaveYear: string, excludeId?: string) {
+  const result = await sqlPool.query(
+    `SELECT id, travel_days, start_date FROM leave_requests
+     WHERE workshop_id = $1 AND lower(trim(name)) = lower(trim($2)) AND leave_year = $3 AND travel_days > 0
+       AND ($4::text IS NULL OR id <> $4)
+     ORDER BY inserted_at ASC LIMIT 1`,
+    [workshopId, name, leaveYear, excludeId || null]
+  );
+  return result.rows[0] || null;
+}
+
+// Resolve how many travel days a request qualifies for, and explain the outcome.
+async function resolveTravelDays(opts: {
+  name: string;
+  workshopId: string;
+  location: string;
+  leaveYear: string;
+  hasLeavePermit: boolean;
+  excludeId?: string;
+}) {
+  const { name, workshopId, location, leaveYear, hasLeavePermit, excludeId } = opts;
+
+  if (!hasLeavePermit) {
+    return { travelDays: 0, distanceKm: null, note: "Đơn không lấy giấy phép nên không tính ngày đi đường." };
+  }
+
+  const distanceKm = await lookupDistanceKm(location);
+  if (distanceKm === null) {
+    return { travelDays: 0, distanceKm: null, note: `Chưa có số km từ Pleiku đến "${location}" trong bảng khoảng cách.` };
+  }
+
+  const eligibleDays = calcTravelDays(distanceKm);
+  if (eligibleDays === 0) {
+    return { travelDays: 0, distanceKm, note: `Quãng đường ${distanceKm} km (dưới 200 km) nên không được tính ngày đi đường.` };
+  }
+
+  const existing = await findExistingTravelDays(name, workshopId, leaveYear, excludeId);
+  if (existing) {
+    return {
+      travelDays: 0,
+      distanceKm,
+      note: `Đồng chí ${name} đã được tính ${existing.travel_days} ngày đi đường trong năm ${leaveYear} (đơn nghỉ từ ${existing.start_date}). Ngày đi đường chỉ tính một lần trong năm.`
+    };
+  }
+
+  return { travelDays: eligibleDays, distanceKm, note: `Quãng đường ${distanceKm} km, được cộng thêm ${eligibleDays} ngày đi đường.` };
+}
+
+// Work out everything a leave request implies: how many shifts it costs, which leave
+// year(s) those shifts are charged to, and whether travel days are granted.
+async function planLeaveRequest(opts: {
+  name: string;
+  workshopId: string;
+  kip: string | number;
+  startDate: string;
+  endDate: string;
+  location: string;
+  hasLeavePermit: boolean;
+  excludeLeaveId?: string;
+}) {
+  const { name, workshopId, kip, startDate, endDate, location, hasLeavePermit, excludeLeaveId } = opts;
+
+  const shiftConfig = await loadShiftConfig(workshopId);
+  const shifts = listWorkingShifts(startDate, endDate, Number(kip), shiftConfig);
+
+  // The leave may fall outside the default window, and each shift can also reach back a year.
+  const touchedYears = new Set<string>();
+  for (const s of shifts) {
+    touchedYears.add(String(s.date.getFullYear()));
+    touchedYears.add(String(s.date.getFullYear() - 1));
+  }
+  const quotas = await getQuotaByYear(name, workshopId, excludeLeaveId, [...touchedYears]);
+
+  const remainingByYear: Record<string, number> = {};
+  for (const [year, q] of Object.entries(quotas)) remainingByYear[year] = q.remaining;
+
+  if (shifts.length === 0) {
+    return {
+      leaveDays: 0,
+      leaveYear: String(new Date(startDate + "T00:00:00").getFullYear() || new Date().getFullYear()),
+      allocations: {} as Record<string, number>,
+      detail: [] as { date: string; shift: string; year: string }[],
+      travel: { travelDays: 0, distanceKm: null as number | null, note: "Đơn không trùng ca trực nào nên không trừ ngày phép." },
+      quotas
+    };
+  }
+
+  // The primary leave year is where the first shift lands; travel days attach to it.
+  const firstProbe = allocateLeaveDays([shifts[0]], remainingByYear);
+  const leaveYear = firstProbe.detail[0].year;
+
+  const travel = await resolveTravelDays({ name, workshopId, location, leaveYear, hasLeavePermit, excludeId: excludeLeaveId });
+
+  // Travel days enlarge that year's allowance before the days are charged against it.
+  if (travel.travelDays > 0) {
+    remainingByYear[leaveYear] = (remainingByYear[leaveYear] ?? 0) + travel.travelDays;
+  }
+
+  const { allocations, detail } = allocateLeaveDays(shifts, remainingByYear);
+
+  return { leaveDays: shifts.length, leaveYear, allocations, detail, travel, quotas };
+}
+
+app.get("/api/leave/plan", async (req, res) => {
+  const { name, kip, startDate, endDate, location, hasLeavePermit, workshopId } = req.query;
+  if (!startDate || !endDate || !kip) {
+    return res.status(400).json({ error: "Thiếu ngày bắt đầu, ngày kết thúc hoặc kíp." });
+  }
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
+  }
+
+  try {
+    const plan = await planLeaveRequest({
+      name: String(name || ""),
+      workshopId: String(workshopId),
+      kip: String(kip),
+      startDate: String(startDate),
+      endDate: String(endDate),
+      location: String(location || ""),
+      hasLeavePermit: String(hasLeavePermit) === "true"
+    });
+    res.json({ success: true, ...plan });
+  } catch (error: any) {
+    console.error("Error planning leave request:", error);
+    res.status(500).json({ error: "Không thể tính ngày phép", details: error.message });
+  }
+});
+
+app.get("/api/leave/employees", async (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear();
+  const workshopId = req.query.workshopId;
+  if (!workshopId) return res.status(400).json({ error: "Thiếu phân xưởng." });
+  try {
+    const result = await sqlPool.query(
+      `SELECT name, hire_year, base_days FROM employees WHERE workshop_id = $1 ORDER BY name ASC`,
+      [workshopId]
+    );
+    res.json(result.rows.map((r: any) => ({
+      name: r.name,
+      hireYear: Number(r.hire_year),
+      baseDays: Number(r.base_days),
+      seniority: calcSeniority(Number(r.hire_year), year),
+      entitled: calcEntitledDays(Number(r.base_days), Number(r.hire_year), year),
+      year: String(year)
+    })));
+  } catch (error: any) {
+    console.error("Error fetching employees:", error);
+    res.status(500).json({ error: "Không thể tải danh sách nhân viên", details: error.message });
+  }
+});
+
+app.post("/api/leave/employees/import", express.json({ limit: "5mb" }), async (req, res) => {
+  const { rows, replaceAll, workshopId } = req.body;
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
+  }
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ error: "Không có dòng dữ liệu nào để nhập." });
+  }
+
+  const valid: { name: string; hireYear: number; baseDays: number }[] = [];
+  const skipped: string[] = [];
+
+  for (const row of rows) {
+    const name = String(row?.name ?? "").trim();
+    const hireYear = Number(row?.hireYear);
+    const baseDays = Number(row?.baseDays);
+    if (!name || !Number.isInteger(hireYear) || hireYear < 1950 || hireYear > 2100) {
+      skipped.push(`${name || "(không tên)"}: năm vào làm không hợp lệ`);
+      continue;
+    }
+    if (!Number.isFinite(baseDays) || baseDays <= 0 || baseDays > 40) {
+      skipped.push(`${name}: mức phép cơ bản không hợp lệ`);
+      continue;
+    }
+    valid.push({ name, hireYear, baseDays: Math.round(baseDays) });
+  }
+
+  if (valid.length === 0) {
+    return res.status(400).json({ error: "Không có dòng hợp lệ nào.", skipped });
+  }
+
+  const client = await sqlPool.connect();
+  try {
+    await client.query("BEGIN");
+    if (replaceAll === true) await client.query(`DELETE FROM employees WHERE workshop_id = $1`, [workshopId]);
+
+    for (const emp of valid) {
+      await client.query(
+        `INSERT INTO employees (name, hire_year, base_days, workshop_id) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (workshop_id, name) DO UPDATE SET hire_year = EXCLUDED.hire_year, base_days = EXCLUDED.base_days, updated_at = now()`,
+        [emp.name, emp.hireYear, emp.baseDays, workshopId]
+      );
+    }
+    await client.query("COMMIT");
+
+    res.json({
+      success: true,
+      imported: valid.length,
+      skipped,
+      message: `✅ Đã nhập ${valid.length} nhân viên từ Excel.${skipped.length > 0 ? ` Bỏ qua ${skipped.length} dòng lỗi.` : ""}`
+    });
+  } catch (error: any) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Error importing employees:", error);
+    res.status(500).json({ error: "Nhập dữ liệu thất bại", details: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/leave/employees/delete", async (req, res) => {
+  const { name, workshopId } = req.body;
+  if (!name) return res.status(400).json({ error: "Thiếu tên nhân viên." });
+  if (!workshopId) return res.status(400).json({ error: "Thiếu phân xưởng." });
+  try {
+    const result = await sqlPool.query(
+      `DELETE FROM employees WHERE workshop_id = $1 AND lower(trim(name)) = lower(trim($2))`,
+      [workshopId, name]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: "Không tìm thấy nhân viên." });
+    res.json({ success: true, deletedCount: result.rowCount });
+  } catch (error: any) {
+    console.error("Error deleting employee:", error);
+    res.status(500).json({ error: "Xóa thất bại", details: error.message });
+  }
+});
+
+app.get("/api/leave/balances", async (req, res) => {
+  const year = String(req.query.year || new Date().getFullYear());
+  const yearNum = Number(year);
+  const workshopId = req.query.workshopId;
+  if (!workshopId) return res.status(400).json({ error: "Thiếu phân xưởng." });
+
+  try {
+    // Four aggregate queries instead of a per-person round trip, so 78 staff stay fast.
+    const [employees, overrides, travel, used] = await Promise.all([
+      sqlPool.query(`SELECT name, hire_year, base_days FROM employees WHERE workshop_id = $1`, [workshopId]),
+      sqlPool.query(`SELECT name, entitled FROM leave_balances WHERE workshop_id = $1 AND year = $2`, [workshopId, year]),
+      sqlPool.query(
+        `SELECT lower(trim(name)) AS key, SUM(travel_days) AS days FROM leave_requests
+         WHERE workshop_id = $1 AND leave_year = $2 AND travel_days > 0 GROUP BY lower(trim(name))`,
+        [workshopId, year]
+      ),
+      sqlPool.query(
+        `SELECT lower(trim(r.name)) AS key, SUM(a.days) AS days FROM leave_allocations a
+         JOIN leave_requests r ON r.id = a.leave_id
+         WHERE r.workshop_id = $1 AND a.leave_year = $2 GROUP BY lower(trim(r.name))`,
+        [workshopId, year]
+      )
+    ]);
+
+    const key = (n: string) => String(n || "").trim().toLowerCase();
+    const travelByName = new Map(travel.rows.map((r: any) => [r.key, toNum(r.days)]));
+    const usedByName = new Map(used.rows.map((r: any) => [r.key, toNum(r.days)]));
+
+    const rows = new Map<string, any>();
+
+    for (const emp of employees.rows) {
+      rows.set(key(emp.name), {
+        name: emp.name,
+        year,
+        entitled: calcEntitledDays(Number(emp.base_days), Number(emp.hire_year), yearNum),
+        seniority: calcSeniority(Number(emp.hire_year), yearNum),
+        source: "seniority" as const
+      });
+    }
+
+    for (const ov of overrides.rows) {
+      const k = key(ov.name);
+      const existing = rows.get(k);
+      rows.set(k, {
+        name: existing?.name || ov.name,
+        year,
+        entitled: toNum(ov.entitled),
+        seniority: existing?.seniority ?? null,
+        source: "manual" as const
+      });
+    }
+
+    const out = [...rows.entries()].map(([k, row]) => {
+      const travelDays = travelByName.get(k) || 0;
+      const usedDays = usedByName.get(k) || 0;
+      return { ...row, travelDays, used: usedDays, remaining: row.entitled + travelDays - usedDays };
+    });
+    out.sort((a, b) => a.name.localeCompare(b.name, "vi"));
+
+    res.json(out);
+  } catch (error: any) {
+    console.error("Error fetching leave balances:", error);
+    res.status(500).json({ error: "Không thể tải bảng phép năm", details: error.message });
+  }
+});
+
+app.post("/api/leave/balances", async (req, res) => {
+  const { name, year, entitled, workshopId } = req.body;
+  if (!name || !year) {
+    return res.status(400).json({ error: "Thiếu tên nhân viên hoặc năm." });
+  }
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
+  }
+
+  try {
+    await sqlPool.query(
+      `INSERT INTO leave_balances (name, year, entitled, workshop_id) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (workshop_id, name, year) DO UPDATE SET entitled = EXCLUDED.entitled, updated_at = now()`,
+      [String(name).trim(), String(year), String(toNum(entitled)), workshopId]
+    );
+    res.json({ success: true, message: `✅ Đã lưu ${toNum(entitled)} ngày phép năm ${year} cho đồng chí ${name}.` });
+  } catch (error: any) {
+    console.error("Error saving leave balance:", error);
+    res.status(500).json({ error: "Lưu phép năm thất bại", details: error.message });
+  }
+});
+
+app.post("/api/leave/balances/delete", async (req, res) => {
+  const { name, year, workshopId } = req.body;
+  if (!name || !year) {
+    return res.status(400).json({ error: "Thiếu tên nhân viên hoặc năm." });
+  }
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
+  }
+
+  try {
+    const result = await sqlPool.query(
+      `DELETE FROM leave_balances WHERE workshop_id = $1 AND lower(trim(name)) = lower(trim($2)) AND year = $3`,
+      [workshopId, name, String(year)]
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: "Không tìm thấy dòng cần xóa." });
+    res.json({ success: true, deletedCount: result.rowCount });
+  } catch (error: any) {
+    console.error("Error deleting leave balance:", error);
+    res.status(500).json({ error: "Xóa thất bại", details: error.message });
+  }
+});
+
+app.get("/api/leave/locations", async (req, res) => {
+  try {
+    const result = await sqlPool.query(`SELECT name, distance_km FROM location_distances ORDER BY distance_km ASC`);
+    res.json(result.rows.map((r: any) => ({ name: r.name, distanceKm: Number(r.distance_km) })));
+  } catch (error: any) {
+    console.error("Error fetching location distances:", error);
+    res.status(500).json({ error: "Không thể tải bảng khoảng cách", details: error.message });
+  }
+});
+
+app.get("/api/leave/travel-days", async (req, res) => {
+  const { name, location, leaveYear, hasLeavePermit, workshopId } = req.query;
+  if (!workshopId) return res.status(400).json({ error: "Thiếu phân xưởng." });
+  try {
+    const result = await resolveTravelDays({
+      name: String(name || ""),
+      workshopId: String(workshopId),
+      location: String(location || ""),
+      leaveYear: String(leaveYear || new Date().getFullYear()),
+      hasLeavePermit: String(hasLeavePermit) === "true"
+    });
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    console.error("Error resolving travel days:", error);
+    res.status(500).json({ error: "Không thể tính ngày đi đường", details: error.message });
+  }
+});
+
 // Signature Management Endpoints
 app.get("/api/signatures", async (req, res) => {
+  const workshopId = req.query.workshopId;
+  if (!workshopId) return res.status(400).json({ error: "Thiếu phân xưởng." });
   try {
-    const db = getFirestoreInstance();
-    const snapshot = await db.collection("signatures").get();
+    const result = await sqlPool.query(`SELECT name, data FROM signatures WHERE workshop_id = $1`, [workshopId]);
     const signatures: Record<string, string> = {};
-    snapshot.forEach(doc => {
-      signatures[doc.id] = doc.data().data;
-    });
+    for (const row of result.rows) signatures[row.name] = row.data;
     res.json(signatures);
   } catch (e: any) {
     console.error("Error fetching signatures:", e);
@@ -715,801 +882,781 @@ app.get("/api/signatures", async (req, res) => {
   }
 });
 
-// ==========================================
-// WORKSHOP & AUTHENTICATION MANAGEMENT
-// ==========================================
-
-const DEFAULT_WORKSHOPS = [
-  {
-    id: "px_vanhanh",
-    name: "Phân xưởng Vận hành Thủy điện",
-    code: "PX-VH",
-    description: "Phân xưởng trực ban vận hành và điều khiển thiết bị",
-    staffData: [
-      ["Trưởng ca",        "Nguyễn Tiến Danh",  "Tạ Văn Hà",          "Nguyễn Văn Trường", "Bùi Chí Thanh",      "Hoàng Tấn Hùng"],
-      ["Trực TTĐK",        "Vũ Đức Cường",       "Lê Trí Dũng",        "Nguyễn Văn Toàn",   "Mai Xuân Sơn",       "Trần Trung Liêm"],
-      ["Trực chính điện",  "Phan Văn Hùng",      "Ngô Xuân Đoàn",      "Nguyễn Yên Nam",    "Nguyễn Trung Chính", "Lê Hướng"],
-      ["Trực phụ điện",    "Hoàng Ngọc Ân",      "Nguyễn Ngọc Hùng",   "Nguyễn Phỉ Được",   "Kiều Cao Khởi1",       "Trương Đình Thắng"],
-      ["Trực chính máy",   "Nguyễn Tấn Phước",   "Lê Văn Dân",         "Phạm Văn Toàn",     "Phan Ngọc Hùng",     "Nguyễn Khắc Học"],
-      ["Trực phụ máy",     "Phạm Văn Von",       "Thái Trần Hoàng Vũ", "Lê Văn Tích",       "Kiều Cao Khởi",          "Puih Thăn"],
-      ["TC TBA 500 kV",    "Võ Quang Minh",      "Trần Hữu Thuận",     "Lê Thành Cao",      "Bùi Ngọc Thuận",     "Phạm Hồng Thắng"],
-      ["Trực OPY",         "Ngô Xuân Vỹ",        "Trần Văn Thiên",     "Hoàng Văn Thăng",   "Trần Tiễn Quân",     "A Ran"],
-      ["Trực CNN",         "Phạm Văn Mạnh",      "Hà Văn Chăn",        "Lê Thế Đàm",        "Cù Minh Trung",      "Nguyễn Vinh Quang"],
-      ["Trưởng kíp",       "Nguyễn Lâm Tiến",    "Đỗ Văn Anh",         "Trịnh Xuân An",     "Tào Trọng Thi",      "Vũ Huy Hùng"],
-      ["Trực chính GM",    "Nguyễn Hồng Quang",  "Trần Nhật Huy",      "Võ Thành Trung",    "Phùng Ngọc Tú",      "Nguyễn Thành Nguyên"],
-      ["Trực phụ điện MR", "Nguyễn Khánh Toàn", "Lê Hoài Bảo",        "Lê Vũ Minh Trung",  "Phạm Đình Đức",      "Lê Trọng Toàn"],
-      ["Trực phụ máy MR",  "Nguyễn Quang Minh",  "Rmah Thắng",         "Phạm Thanh Tùng",   "Nguyễn Văn Trung",   "Lê Trọng Toàn1"]
-    ],
-    config: {
-      soVanBan: '123/PX-VH',
-      ngayKy: '',
-      nguoiKy: 'Nguyễn Văn Nghị',
-      chucVuNguoiKy: 'Quản đốc Phân xưởng',
-      zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
-    },
-    features: {
-      enablePhanCa: true,
-      enableDonNghiPhep: true,
-      enableDoiCa: true,
-      enableChuKySo: true,
-      enableGoogleSheets: true,
-      enableBaoComCa: true
-    },
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: "px_suachua",
-    name: "Phân xưởng Sửa chữa Cơ điện",
-    code: "PX-SC",
-    description: "Phân xưởng chịu trách nhiệm bảo trì, bảo dưỡng và sửa chữa thiết bị",
-    staffData: [
-      ["Trưởng ca Sửa chữa", "Lê Văn Tùng", "Trần Đình Bảo", "Phạm Văn Nam"],
-      ["Kỹ thuật viên Điện", "Nguyễn Hoàng Việt", "Đỗ Văn Toàn", "Vũ Minh Tân"],
-      ["Kỹ thuật viên Cơ", "Nguyễn Khắc Tuấn", "Phan Thanh Hải", "Lê Hữu Nghĩa"]
-    ],
-    config: {
-      soVanBan: '45/PX-SC',
-      ngayKy: '',
-      nguoiKy: 'Trần Văn Tuyên',
-      chucVuNguoiKy: 'Quản đốc PX Sửa chữa',
-      zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
-    },
-    features: {
-      enablePhanCa: true,
-      enableDonNghiPhep: true,
-      enableDoiCa: true,
-      enableChuKySo: true,
-      enableGoogleSheets: false,
-      enableBaoComCa: true
-    },
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+app.post("/api/signatures", express.json({ limit: '10mb' }), async (req, res) => {
+  const { name, data, workshopId } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: "Name is required" });
   }
-];
-
-const DEFAULT_ACCOUNTS = [
-  {
-    id: "acc_admin",
-    username: "admin",
-    password: "admin123",
-    fullName: "Quản trị viên Hệ thống (Super Admin)",
-    role: "super_admin",
-    workshopId: "all",
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: "acc_admin_vh",
-    username: "admin_vanhanh",
-    password: "123456",
-    fullName: "Admin Phân xưởng Vận hành",
-    role: "workshop_admin",
-    workshopId: "px_vanhanh",
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: "acc_user_vh",
-    username: "user_vanhanh",
-    password: "123456",
-    fullName: "Tài khoản PX Vận hành",
-    role: "workshop_user",
-    workshopId: "px_vanhanh",
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: "acc_admin_sc",
-    username: "admin_suachua",
-    password: "123456",
-    fullName: "Admin Phân xưởng Sửa chữa",
-    role: "workshop_admin",
-    workshopId: "px_suachua",
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: "acc_user_sc",
-    username: "user_suachua",
-    password: "123456",
-    fullName: "Tài khoản PX Sửa chữa",
-    role: "workshop_user",
-    workshopId: "px_suachua",
-    createdAt: new Date().toISOString()
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
   }
-];
-
-const LOCAL_STORE_PATH = path.join(process.cwd(), "local_store.json");
-
-let localStore: {
-  workshops: any[];
-  accounts: any[];
-  appSettings: any;
-  pendingLeaves: any[];
-  signatures: Record<string, any>;
-} = {
-  workshops: [...DEFAULT_WORKSHOPS],
-  accounts: [...DEFAULT_ACCOUNTS],
-  appSettings: null,
-  pendingLeaves: [],
-  signatures: {}
-};
-
-try {
-  if (fs.existsSync(LOCAL_STORE_PATH)) {
-    const fileData = JSON.parse(fs.readFileSync(LOCAL_STORE_PATH, "utf-8"));
-    if (fileData.workshops && Array.isArray(fileData.workshops)) localStore.workshops = fileData.workshops;
-    if (fileData.accounts && Array.isArray(fileData.accounts)) localStore.accounts = fileData.accounts;
-    if (fileData.appSettings) localStore.appSettings = fileData.appSettings;
-    if (fileData.pendingLeaves && Array.isArray(fileData.pendingLeaves)) localStore.pendingLeaves = fileData.pendingLeaves;
-    if (fileData.signatures) localStore.signatures = fileData.signatures;
-  }
-} catch (err) {
-  console.warn("Notice: Reading local_store.json fallback notice:", err);
-}
-
-function persistLocalStore() {
   try {
-    fs.writeFileSync(LOCAL_STORE_PATH, JSON.stringify(localStore, null, 2), "utf-8");
-  } catch (err) {
-    // Ignore if environment is read-only
-  }
-}
-
-let hasSeededWorkshops = false;
-let hasSeededAccounts = false;
-
-async function ensureSeedData() {
-  try {
-    const db = getFirestoreInstance();
-    const seedDoc = await db.collection("system").doc("seed_status").get().catch(() => null);
-    if (seedDoc && seedDoc.exists) {
-      hasSeededWorkshops = true;
-      hasSeededAccounts = true;
-      return;
+    // An empty data payload is how the client asks for the signature to be removed.
+    if (!data) {
+      await sqlPool.query(`DELETE FROM signatures WHERE workshop_id = $1 AND name = $2`, [workshopId, name]);
+      return res.json({ success: true, deleted: true });
     }
-    
-    // Seed default workshops only if workshops collection is empty
-    if (!hasSeededWorkshops) {
-      const wsSnap = await db.collection("workshops").limit(1).get();
-      if (wsSnap.empty) {
-        for (const ws of DEFAULT_WORKSHOPS) {
-          await db.collection("workshops").doc(ws.id).set(serializeForFirestore(ws));
-        }
-      }
-      hasSeededWorkshops = true;
-    }
-
-    // Seed default accounts only if accounts collection is empty
-    if (!hasSeededAccounts) {
-      const accSnap = await db.collection("accounts").limit(1).get();
-      if (accSnap.empty) {
-        for (const acc of DEFAULT_ACCOUNTS) {
-          await db.collection("accounts").doc(acc.id).set(acc);
-        }
-      }
-      hasSeededAccounts = true;
-    }
-
-    await db.collection("system").doc("seed_status").set({ seededAt: new Date().toISOString() }).catch(() => null);
+    await sqlPool.query(
+      `INSERT INTO signatures (name, data, workshop_id) VALUES ($1,$2,$3)
+       ON CONFLICT (workshop_id, name) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
+      [name, data, workshopId]
+    );
+    res.json({ success: true });
   } catch (e: any) {
-    console.warn("Firestore seed data check notice (using local fallback store):", e.message || e);
+    console.error("Error saving signature:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Batch upload used by the "match files to staff names" flow in SignatureManager.
+app.post("/api/signatures/batch", express.json({ limit: '50mb' }), async (req, res) => {
+  const { items, workshopId } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: "items is required" });
+  }
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
+  }
+
+  const client = await sqlPool.connect();
+  try {
+    await client.query("BEGIN");
+    let saved = 0;
+    for (const item of items) {
+      if (!item?.name || !item?.data) continue;
+      await client.query(
+        `INSERT INTO signatures (name, data, workshop_id) VALUES ($1,$2,$3)
+         ON CONFLICT (workshop_id, name) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
+        [item.name, item.data, workshopId]
+      );
+      saved++;
+    }
+    await client.query("COMMIT");
+    res.json({ success: true, saved });
+  } catch (e: any) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Error saving signatures batch:", e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ============================================================================
+// Multi-workshop login/admin system (LoginForm, UserHeaderBar, WorkshopManagerModal).
+// Every /api route is guarded by requireAuth below. The caller's identity comes from
+// an httpOnly session cookie that the browser cannot read or forge from JavaScript —
+// never from the request body, and never from what the client claims its role is.
+// ============================================================================
+
+const SESSION_COOKIE = "sid";
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+function hashSessionToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+// Returns the raw token to hand to the browser; only its hash reaches the database,
+// so read access to user_sessions cannot be replayed as a login.
+async function createSession(userId: string): Promise<string> {
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+  await sqlPool.query(
+    `INSERT INTO user_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
+    [hashSessionToken(token), userId, expiresAt]
+  );
+  return token;
+}
+
+async function loadSession(token: string | undefined) {
+  if (!token) return null;
+  const result = await sqlPool.query(
+    `SELECT u.* FROM user_sessions s
+       JOIN user_accounts u ON u.id = s.user_id
+      WHERE s.token_hash = $1 AND s.expires_at > now()`,
+    [hashSessionToken(token)]
+  );
+  return result.rows[0] || null;
+}
+
+async function destroySession(token: string | undefined) {
+  if (!token) return;
+  await sqlPool.query(`DELETE FROM user_sessions WHERE token_hash = $1`, [hashSessionToken(token)]);
+}
+
+function setSessionCookie(req: any, res: any, token: string) {
+  // Deriving this from the request rather than NODE_ENV means a deploy that forgets to
+  // set the env var still gets a Secure cookie whenever the connection is HTTPS.
+  const isHttps = req.secure
+    || String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() === "https"
+    || process.env.NODE_ENV === "production";
+  res.cookie(SESSION_COOKIE, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isHttps,
+    maxAge: SESSION_TTL_MS,
+    path: "/"
+  });
+}
+
+// True only while the system has no accounts at all. It lets the very first admin be
+// created through the login screen and then closes permanently — without it there is
+// no way to bootstrap, and with it left open anyone could mint themselves an account.
+async function needsBootstrap(): Promise<boolean> {
+  const r = await sqlPool.query(`SELECT 1 FROM user_accounts LIMIT 1`);
+  return r.rowCount === 0;
+}
+
+// Reachable without a session. Everything else under /api requires one.
+const PUBLIC_API_PATHS = new Set([
+  "/api/auth/login",
+  "/api/auth/logout",
+  "/api/auth/me",
+  "/api/auth/register",
+  "/api/setup/status"
+]);
+
+// Only reachable without a session while needsBootstrap() is true — the escape hatch
+// for creating the very first super admin on an empty database.
+const BOOTSTRAP_API_PATHS: Array<{ method: string; path: string }> = [
+  { method: "GET", path: "/api/workshops" },
+  { method: "POST", path: "/api/workshops" },
+  { method: "POST", path: "/api/accounts" }
+];
+
+async function requireAuth(req: any, res: any, next: any) {
+  const path = req.path;
+  // Mounted globally rather than on "/api" because Express strips the mount prefix
+  // from req.path, which would make every check below silently miss.
+  if (!path.startsWith("/api/")) return next();
+  if (PUBLIC_API_PATHS.has(path)) return next();
+
+  try {
+    const user = await loadSession(req.cookies?.[SESSION_COOKIE]);
+    if (user) {
+      req.user = toUserAccount(user);
+      return next();
+    }
+
+    if (BOOTSTRAP_API_PATHS.some(r => r.method === req.method && r.path === path) && await needsBootstrap()) {
+      return next();
+    }
+
+    // The Google OAuth popup lands here after a cross-site redirect. Answering with
+    // JSON would leave a blank window, so send readable HTML instead.
+    if (path.startsWith("/api/auth/google")) {
+      return res.status(401).send("<html><body style=\"font-family:sans-serif;padding:24px\">"
+        + "<h3>Phiên đăng nhập đã hết hạn</h3>"
+        + "<p>Vui lòng đóng cửa sổ này, đăng nhập lại rồi thử lại.</p></body></html>");
+    }
+    return res.status(401).json({ error: "Chưa đăng nhập hoặc phiên đã hết hạn." });
+  } catch (e: any) {
+    console.error("Auth check failed:", e);
+    return res.status(500).json({ error: "Lỗi kiểm tra phiên đăng nhập." });
   }
 }
 
-ensureSeedData().catch((err) => console.warn("Seed data notice:", err?.message || err));
+// Records who did what. Reads are skipped — logging every GET would bury the writes
+// that actually matter. The actor comes from the session, so it cannot be spoofed, and
+// the row is written after the response so a failed request is logged as failed.
+const AUDIT_SKIP_PATHS = new Set(["/api/auth/login", "/api/auth/logout", "/api/auth/me"]);
 
-// Track failed login attempts and temporary account locks (5 fails -> 15 min lock)
-const failedLoginAttempts: Record<string, { count: number; lockUntil: number }> = {};
+function auditSummary(req: any): string {
+  const b = req.body || {};
+  const bits: string[] = [];
+  if (b.name) bits.push(`name=${b.name}`);
+  if (b.username) bits.push(`username=${b.username}`);
+  if (b.role) bits.push(`role=${b.role}`);
+  if (req.params?.id) bits.push(`id=${req.params.id}`);
+  if (b.id) bits.push(`id=${b.id}`);
+  if (Array.isArray(b.rows)) bits.push(`rows=${b.rows.length}`);
+  if (Array.isArray(b.ids)) bits.push(`ids=${b.ids.length}`);
+  if (Array.isArray(b.staffData)) bits.push(`staffRows=${b.staffData.length}`);
+  if (b.replaceAll === true) bits.push("replaceAll=true");
+  return bits.join(" ").slice(0, 500);
+}
 
-app.post("/api/auth/login", express.json(), async (req, res) => {
+function auditLog(req: any, res: any, next: any) {
+  if (!req.path.startsWith("/api/")) return next();
+  if (req.method === "GET" || req.method === "HEAD") return next();
+  if (AUDIT_SKIP_PATHS.has(req.path)) return next();
+
+  const summary = auditSummary(req);
+  res.on("finish", () => {
+    sqlPool.query(
+      `INSERT INTO audit_log (user_id, username, role, workshop_id, method, path, status, summary, ip)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        req.user?.id || null,
+        req.user?.username || null,
+        req.user?.role || null,
+        req.user?.workshopId || req.body?.workshopId || null,
+        req.method,
+        req.path,
+        res.statusCode,
+        summary,
+        req.socket?.remoteAddress || null
+      ]
+    ).catch((e: any) => console.error("Audit log write failed:", e.message));
+  });
+  next();
+}
+
+// Every workshop-scoped query filters on a workshopId that arrives in the query string
+// or body. Left alone, any logged-in user could simply name another workshop and read
+// or delete its data. Rather than patch ~15 handlers individually (and miss one), pin
+// the value here, once, for everybody who is not a super admin.
+function scopeWorkshopId(req: any, res: any, next: any) {
+  if (!req.path.startsWith("/api/")) return next();
+  if (!req.user || isSuperAdmin(req)) return next(); // super admins legitimately switch
+
+  // Past this point req.user is guaranteed NOT a super admin. A non-super-admin should
+  // always carry a real workshop id — "all" is the value toUserAccount() assigns when
+  // workshop_id is NULL, which is otherwise only meant for super_admin rows. If a
+  // workshop_admin ever ends up with an empty or "all" workshopId (e.g. leftover data
+  // from before workshop deletion cascaded to accounts), deny rather than treat it as
+  // unrestricted access — the previous `return next()` here let such an account read
+  // and modify every other workshop's data.
+  const own = String(req.user.workshopId || "");
+  if (!own || own === "all") {
+    return res.status(403).json({ error: "Tài khoản chưa được gán phân xưởng hợp lệ." });
+  }
+
+  const asked = req.query?.workshopId ?? req.body?.workshopId;
+  if (asked !== undefined && asked !== null && String(asked) !== "" && String(asked) !== own) {
+    return res.status(403).json({ error: "Bạn chỉ truy cập được dữ liệu phân xưởng của mình." });
+  }
+
+  // Overwrite rather than merely validate, so a handler reading either location can
+  // never end up with a value the caller chose.
+  if (req.query && typeof req.query === "object") req.query.workshopId = own;
+  if (req.body && typeof req.body === "object" && !Array.isArray(req.body)) req.body.workshopId = own;
+  next();
+}
+
+app.get("/api/audit-log", async (req: any, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 200, 1000);
+    if (isSuperAdmin(req)) {
+      const r = await sqlPool.query(`SELECT * FROM audit_log ORDER BY at DESC LIMIT $1`, [limit]);
+      return res.json(r.rows);
+    }
+    const wsId = req.user?.workshopId;
+    if (!wsId || wsId === "all") return res.json([]);
+    const r = await sqlPool.query(
+      `SELECT * FROM audit_log WHERE workshop_id = $1 ORDER BY at DESC LIMIT $2`, [wsId, limit]
+    );
+    res.json(r.rows);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/setup/status", async (_req, res) => {
+  try {
+    res.json({ needsBootstrap: await needsBootstrap() });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/auth/me", async (req: any, res) => {
+  try {
+    const user = await loadSession(req.cookies?.[SESSION_COOKIE]);
+    if (!user) return res.status(401).json({ error: "Chưa đăng nhập." });
+    res.json({ user: toUserAccount(user) });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Open self-service signup: anyone may create their own account and their own new
+// workshop. The role is hardcoded here and any role/workshopId in the request body is
+// ignored, so this endpoint can never mint a super admin or attach the caller to
+// someone else's workshop — that is what keeps it safe to leave open.
+const SIGNUP_ROLE = "workshop_admin";
+
+app.post("/api/auth/register", async (req, res) => {
+  const { username, password, fullName, workshopName, workshopCode, workshopDesc, companyName, notifyEmail } = req.body || {};
+  if (!String(username || "").trim() || !String(password || "").trim()
+      || !String(workshopName || "").trim()) {
+    return res.status(400).json({ error: "Vui lòng nhập đủ tên đăng nhập, mật khẩu và tên phân xưởng." });
+  }
+  if (String(password).length < 6) {
+    return res.status(400).json({ error: "Mật khẩu phải có ít nhất 6 ký tự." });
+  }
+
+  const uname = String(username).trim();
+  const wsName = String(workshopName).trim();
+  const wsCode = String(workshopCode || "").trim() || wsName.substring(0, 5).toUpperCase();
+  const client = await sqlPool.connect();
+  try {
+    const taken = await client.query(
+      `SELECT 1 FROM user_accounts WHERE lower(username) = lower($1)`, [uname]
+    );
+    if (taken.rowCount) {
+      return res.status(409).json({ error: "Tên đăng nhập này đã được sử dụng." });
+    }
+
+    await client.query("BEGIN");
+    const wsId = "ws_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+    await client.query(
+      `INSERT INTO workshops (id, name, code, description, staff_data, config, features)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [wsId, wsName, wsCode, String(workshopDesc || "").trim() || `Phân xưởng ${wsName}`,
+       JSON.stringify([]),
+       JSON.stringify({
+         companyName: String(companyName || "").trim() || "CÔNG TY THỦY ĐIỆN IALY",
+         headerWorkshopName: wsName.toUpperCase(),
+         documentCodeSuffix: `/${wsCode}`,
+         recipientWorkshopName: wsName,
+         shortWorkshopName: wsName,
+         locationName: "Gia Lai",
+         soVanBan: "",
+         nguoiKy: "Lãnh đạo Phân xưởng",
+         chucVuNguoiKy: "Quản đốc Phân xưởng",
+         notifyEmail: String(notifyEmail || "").trim()
+       }),
+       JSON.stringify({})]
+    );
+
+    const userId = "user_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+    const inserted = await client.query(
+      `INSERT INTO user_accounts (id, username, password_hash, full_name, role, workshop_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [userId, uname, hashPassword(String(password)), String(fullName || "").trim() || uname, SIGNUP_ROLE, wsId]
+    );
+    await client.query("COMMIT");
+
+    setSessionCookie(req, res, await createSession(userId));
+    res.json({ success: true, user: toUserAccount(inserted.rows[0]) });
+  } catch (e: any) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Error registering:", e);
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/api/auth/logout", async (req: any, res) => {
+  try {
+    await destroySession(req.cookies?.[SESSION_COOKIE]);
+  } catch (e) {
+    console.error("Logout cleanup failed:", e);
+  }
+  res.clearCookie(SESSION_COOKIE, { path: "/" });
+  res.json({ success: true });
+});
+
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password: string, stored: string): boolean {
+  const [salt, hash] = String(stored || "").split(":");
+  if (!salt || !hash) return false;
+  const check = crypto.scryptSync(password, salt, 64).toString("hex");
+  const a = Buffer.from(hash, "hex");
+  const b = Buffer.from(check, "hex");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function toUserAccount(row: any) {
+  return {
+    id: row.id,
+    username: row.username,
+    fullName: row.full_name,
+    role: row.role,
+    workshopId: row.workshop_id || "all",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function toWorkshop(row: any) {
+  return {
+    id: row.id,
+    name: row.name,
+    code: row.code,
+    description: row.description || "",
+    staffData: row.staff_data || [],
+    config: row.config || {},
+    features: row.features || {},
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+// Throttling failed logins. Without it a weak password is only as strong as how fast
+// an attacker can send requests. Kept in memory on purpose: this resets on restart,
+// which is fine for a lockout, and avoids a database write on every wrong guess.
+const LOGIN_MAX_ATTEMPTS = 8;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const loginAttempts = new Map<string, { count: number; firstAt: number; until: number }>();
+
+function loginKey(req: any, username: string): string {
+  // Deliberately the socket address, not X-Forwarded-For: that header is set by the
+  // caller and an attacker could rotate it to sidestep the lockout entirely. Behind a
+  // reverse proxy every request shares one address, which makes this effectively a
+  // per-username lockout — still enough to stop guessing at speed.
+  const ip = req.socket?.remoteAddress || "unknown";
+  return `${ip}|${String(username).trim().toLowerCase()}`;
+}
+
+function loginLockRemaining(key: string): number {
+  const rec = loginAttempts.get(key);
+  if (!rec) return 0;
+  if (rec.until > Date.now()) return Math.ceil((rec.until - Date.now()) / 1000);
+  if (Date.now() - rec.firstAt > LOGIN_WINDOW_MS) loginAttempts.delete(key);
+  return 0;
+}
+
+function recordLoginFailure(key: string) {
+  const now = Date.now();
+  const rec = loginAttempts.get(key);
+  if (!rec || now - rec.firstAt > LOGIN_WINDOW_MS) {
+    loginAttempts.set(key, { count: 1, firstAt: now, until: 0 });
+    return;
+  }
+  rec.count += 1;
+  if (rec.count >= LOGIN_MAX_ATTEMPTS) rec.until = now + LOGIN_WINDOW_MS;
+}
+
+// The map would otherwise grow forever on a long-running server.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of loginAttempts) {
+    if (v.until < now && now - v.firstAt > LOGIN_WINDOW_MS) loginAttempts.delete(k);
+  }
+}, LOGIN_WINDOW_MS).unref();
+
+app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
-    return res.status(400).json({ error: "Tên đăng nhập và mật khẩu là bắt buộc." });
+    return res.status(400).json({ error: "Thiếu tên đăng nhập hoặc mật khẩu." });
   }
 
-  const cleanUsername = String(username).trim().toLowerCase();
-  const cleanPassword = String(password).trim();
-  const now = Date.now();
-
-  // Check if account is locked out
-  const userLock = failedLoginAttempts[cleanUsername];
-  if (userLock && userLock.lockUntil > now) {
-    const remainingMs = userLock.lockUntil - now;
-    const remainingMins = Math.ceil(remainingMs / 60000);
+  const key = loginKey(req, username);
+  const locked = loginLockRemaining(key);
+  if (locked > 0) {
     return res.status(429).json({
-      error: `Tài khoản tạm thời bị khóa do nhập sai mật khẩu 5 lần liên tiếp. Vui lòng thử lại sau ${remainingMins} phút.`
+      error: `Sai quá nhiều lần. Vui lòng thử lại sau ${Math.ceil(locked / 60)} phút.`
     });
   }
 
-  await ensureSeedData();
-
-  let userDoc: any = null;
-
   try {
-    const db = getFirestoreInstance();
-    const snapshot = await db.collection("accounts").where("username", "==", cleanUsername).get();
-    if (!snapshot.empty) {
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        if (data.password === cleanPassword) {
-          userDoc = { id: doc.id, ...data };
-        }
-      });
-    }
-  } catch (dbErr: any) {
-    console.warn("Firestore accounts search notice:", dbErr.message);
-  }
-
-  // Fallback to localStore / DEFAULT_ACCOUNTS
-  if (!userDoc) {
-    const localAcc = localStore.accounts.find(
-      acc => acc.username.toLowerCase() === cleanUsername && acc.password === cleanPassword
+    const result = await sqlPool.query(
+      `SELECT * FROM user_accounts WHERE lower(username) = lower(trim($1))`,
+      [username]
     );
-    if (localAcc) {
-      userDoc = { ...localAcc };
-    } else {
-      const defaultAcc = DEFAULT_ACCOUNTS.find(
-        acc => acc.username.toLowerCase() === cleanUsername && acc.password === cleanPassword
-      );
-      if (defaultAcc) {
-        userDoc = { ...defaultAcc };
-      }
+    const acc = result.rows[0];
+    if (!acc || !verifyPassword(password, acc.password_hash)) {
+      recordLoginFailure(key);
+      return res.status(401).json({ error: "Tên đăng nhập hoặc mật khẩu không chính xác." });
     }
-  }
-
-  if (!userDoc) {
-    const currentAttempt = failedLoginAttempts[cleanUsername] || { count: 0, lockUntil: 0 };
-    if (currentAttempt.lockUntil && currentAttempt.lockUntil <= now) {
-      currentAttempt.count = 0;
-      currentAttempt.lockUntil = 0;
-    }
-
-    currentAttempt.count += 1;
-
-    if (currentAttempt.count >= 5) {
-      currentAttempt.lockUntil = now + 15 * 60 * 1000; // 15 minutes lockout
-      failedLoginAttempts[cleanUsername] = currentAttempt;
-      return res.status(429).json({
-        error: "Bạn đã nhập sai mật khẩu 5 lần liên tiếp. Tài khoản tạm thời bị khóa trong 15 phút."
-      });
-    }
-
-    failedLoginAttempts[cleanUsername] = currentAttempt;
-    const remaining = 5 - currentAttempt.count;
-    return res.status(401).json({
-      error: `Tên đăng nhập hoặc mật khẩu không chính xác (còn ${remaining} lần thử trước khi khóa 15 phút).`
-    });
-  }
-
-  // Successful login -> clear failed attempts
-  delete failedLoginAttempts[cleanUsername];
-
-  const { password: _, ...userWithoutPassword } = userDoc;
-
-  const isHttps = req.secure || req.headers["x-forwarded-proto"] === "https";
-  res.cookie("auth_user", JSON.stringify(userWithoutPassword), {
-    httpOnly: true,
-    secure: isHttps,
-    sameSite: isHttps ? "none" : "lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000
-  });
-
-  res.json({
-    success: true,
-    user: userWithoutPassword
-  });
-});
-
-app.get("/api/auth/me", async (req, res) => {
-  let cookieUser = req.cookies.auth_user;
-
-  if (!cookieUser && req.headers["x-auth-user"]) {
-    try {
-      const rawHeader = req.headers["x-auth-user"] as string;
-      cookieUser = rawHeader.startsWith("%") ? decodeURIComponent(rawHeader) : rawHeader;
-    } catch (e) {
-      cookieUser = req.headers["x-auth-user"];
-    }
-  }
-
-  if (!cookieUser) {
-    return res.json({ authenticated: false, user: null });
-  }
-  try {
-    const user = typeof cookieUser === 'string' ? JSON.parse(cookieUser) : cookieUser;
-    res.json({ authenticated: true, user });
-  } catch (e) {
-    res.json({ authenticated: false, user: null });
-  }
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  res.clearCookie("auth_user");
-  res.json({ success: true });
-});
-
-app.post("/api/auth/change-password", express.json(), async (req, res) => {
-  let cookieUser = req.cookies.auth_user;
-  if (!cookieUser && req.headers["x-auth-user"]) {
-    try {
-      const rawHeader = req.headers["x-auth-user"] as string;
-      cookieUser = rawHeader.startsWith("%") ? decodeURIComponent(rawHeader) : rawHeader;
-    } catch (e) {
-      cookieUser = req.headers["x-auth-user"];
-    }
-  }
-
-  if (!cookieUser) {
-    return res.status(401).json({ error: "Bạn chưa đăng nhập." });
-  }
-
-  let currentUser: any = null;
-  try {
-    currentUser = typeof cookieUser === 'string' ? JSON.parse(cookieUser) : cookieUser;
-  } catch (e) {
-    return res.status(401).json({ error: "Phiên đăng nhập không hợp lệ." });
-  }
-
-  const { oldPassword, newPassword } = req.body;
-  if (!oldPassword || !newPassword) {
-    return res.status(400).json({ error: "Vui lòng nhập đầy đủ mật khẩu cũ và mật khẩu mới." });
-  }
-
-  const cleanOld = String(oldPassword).trim();
-  const cleanNew = String(newPassword).trim();
-
-  if (cleanNew.length < 4) {
-    return res.status(400).json({ error: "Mật khẩu mới phải có ít nhất 4 ký tự." });
-  }
-
-  let userAccountDoc: any = null;
-  const usernameClean = currentUser.username.toLowerCase();
-
-  try {
-    const db = getFirestoreInstance();
-    const snapshot = await db.collection("accounts").where("username", "==", usernameClean).get();
-    if (!snapshot.empty) {
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        if (data.password === cleanOld) {
-          userAccountDoc = { id: doc.id, ...data };
-        }
-      });
-    }
+    loginAttempts.delete(key);
+    // Drop any expired rows now that we are writing one anyway.
+    await sqlPool.query(`DELETE FROM user_sessions WHERE expires_at <= now()`);
+    setSessionCookie(req, res, await createSession(acc.id));
+    res.json({ success: true, user: toUserAccount(acc) });
   } catch (e: any) {
-    console.warn("Firestore find account notice:", e?.message);
+    console.error("Error logging in:", e);
+    res.status(500).json({ error: e.message });
   }
+});
 
-  if (!userAccountDoc) {
-    const localAcc = localStore.accounts.find(
-      acc => acc.username.toLowerCase() === usernameClean && acc.password === cleanOld
-    );
-    if (localAcc) {
-      userAccountDoc = { ...localAcc };
-    } else {
-      const defaultAcc = DEFAULT_ACCOUNTS.find(
-        acc => acc.username.toLowerCase() === usernameClean && acc.password === cleanOld
-      );
-      if (defaultAcc) {
-        userAccountDoc = { ...defaultAcc };
-      }
+app.get("/api/workshops", async (req: any, res) => {
+  try {
+    // Signup is open to anyone, so this list must not double as a directory of every
+    // other workshop's staff roster and config. Only a super admin sees them all.
+    if (req.user && !isSuperAdmin(req)) {
+      const wsId = req.user.workshopId;
+      if (!wsId || wsId === "all") return res.json([]);
+      const own = await sqlPool.query(`SELECT * FROM workshops WHERE id = $1`, [wsId]);
+      return res.json(own.rows.map(toWorkshop));
     }
-  }
-
-  if (!userAccountDoc) {
-    return res.status(400).json({ error: "Mật khẩu cũ không chính xác." });
-  }
-
-  userAccountDoc.password = cleanNew;
-  userAccountDoc.updatedAt = new Date().toISOString();
-
-  const accIdx = localStore.accounts.findIndex(a => a.username.toLowerCase() === usernameClean || a.id === userAccountDoc.id);
-  if (accIdx >= 0) {
-    localStore.accounts[accIdx].password = cleanNew;
-  } else {
-    localStore.accounts.push(userAccountDoc);
-  }
-  persistLocalStore();
-
-  try {
-    const db = getFirestoreInstance();
-    await db.collection("accounts").doc(userAccountDoc.id).set({
-      password: cleanNew,
-      updatedAt: userAccountDoc.updatedAt
-    }, { merge: true });
+    const result = await sqlPool.query(`SELECT * FROM workshops ORDER BY created_at ASC`);
+    res.json(result.rows.map(toWorkshop));
   } catch (e: any) {
-    console.warn("Firestore password update notice:", e.message);
+    console.error("Error fetching workshops:", e);
+    res.status(500).json({ error: e.message });
   }
-
-  res.json({ success: true, message: "Đổi mật khẩu thành công!" });
 });
 
-app.get("/api/workshops", async (req, res) => {
-  try {
-    const db = getFirestoreInstance();
-    await ensureSeedData();
-    
-    const snapshot = await db.collection("workshops").get();
-    const workshops: any[] = [];
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      const deserialized = deserializeFromFirestore(data);
-      workshops.push({
-        id: doc.id,
-        ...deserialized
-      });
-    });
-    localStore.workshops = workshops;
-    persistLocalStore();
-    return res.json(workshops);
-  } catch (e: any) {
-    console.warn("Firestore get workshops notice (using localStore fallback):", e.message);
-  }
-  res.json(localStore.workshops || []);
-});
-
-app.post("/api/workshops", express.json({ limit: '10mb' }), async (req, res) => {
+// Upsert: creates a new workshop when `id` is absent, updates in place when present
+// (matches WorkshopManagerModal, which reuses this one endpoint for both).
+app.post("/api/workshops", express.json({ limit: "5mb" }), async (req: any, res) => {
   const { id, name, code, description, staffData, config, features } = req.body;
-  if (!name) {
-    return res.status(400).json({ error: "Tên phân xưởng là bắt buộc" });
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: "Thiếu tên phân xưởng." });
   }
 
-  const wsId = id || ("px_" + Date.now());
-  const now = new Date().toISOString();
-
-  const workshopDoc = {
-    id: wsId,
-    name: name.trim(),
-    code: (code || name.substring(0, 5).toUpperCase()).trim(),
-    description: description || "",
-    staffData: staffData || [],
-    config: config || {
-      soVanBan: '123/PX',
-      ngayKy: '',
-      nguoiKy: 'Lãnh đạo Phân xưởng',
-      chucVuNguoiKy: 'Quản đốc Phân xưởng',
-      zaloWebhookUrl: 'https://vhialy.dpdns.org/webhook/notify'
-    },
-    features: features || {
-      enablePhanCa: true,
-      enableDonNghiPhep: true,
-      enableDoiCa: true,
-      enableChuKySo: true,
-      enableGoogleSheets: true,
-      enableBaoComCa: true
-    },
-    updatedAt: now,
-    createdAt: req.body.createdAt || now
-  };
-
-  const wsIdx = localStore.workshops.findIndex(w => w.id === wsId);
-  if (wsIdx >= 0) {
-    localStore.workshops[wsIdx] = { ...localStore.workshops[wsIdx], ...workshopDoc };
-  } else {
-    localStore.workshops.push(workshopDoc);
-  }
-  persistLocalStore();
-
-  try {
-    const db = getFirestoreInstance();
-    const docToSave = serializeForFirestore(workshopDoc);
-    await db.collection("workshops").doc(wsId).set(docToSave, { merge: true });
-  } catch (e: any) {
-    console.warn("Firestore save workshop notice (saved in localStore fallback):", e.message);
-  }
-
-  res.json({
-    success: true,
-    workshop: workshopDoc
-  });
-});
-
-app.delete("/api/workshops/:id", async (req, res) => {
-  const { id } = req.params;
-  localStore.workshops = localStore.workshops.filter(w => w.id !== id);
-  localStore.accounts = localStore.accounts.filter(a => a.workshopId !== id);
-  persistLocalStore();
-
-  try {
-    const db = getFirestoreInstance();
-    await db.collection("workshops").doc(id).delete();
-
-    const accSnap = await db.collection("accounts").where("workshopId", "==", id).get();
-    if (!accSnap.empty) {
-      const batch = db.batch();
-      accSnap.forEach(doc => {
-        batch.delete(doc.ref);
-      });
-      await batch.commit();
+  // This route both creates and updates. A workshop admin may save their own workshop
+  // (the app autosaves config here) but not spin up extra ones or edit anyone else's;
+  // public signup creates its workshop through /api/auth/register instead.
+  if (req.user && !isSuperAdmin(req)) {
+    if (!id) {
+      return res.status(403).json({ error: "Chỉ Super Admin mới tạo được phân xưởng mới." });
     }
-  } catch (e: any) {
-    console.warn("Firestore delete workshop notice:", e.message);
+    if (String(id) !== String(req.user.workshopId || "")) {
+      return res.status(403).json({ error: "Bạn chỉ sửa được phân xưởng của mình." });
+    }
   }
-  res.json({ success: true });
-});
 
-app.get("/api/accounts", async (req, res) => {
   try {
-    const db = getFirestoreInstance();
-    await ensureSeedData();
-    
-    const snapshot = await db.collection("accounts").get();
-    const accounts: any[] = [];
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      accounts.push({
-        id: doc.id,
-        username: data.username,
-        fullName: data.fullName,
-        role: data.role,
-        workshopId: data.workshopId,
-        createdAt: data.createdAt
-      });
-    });
-    localStore.accounts = accounts;
-    persistLocalStore();
-    return res.json(accounts);
+    const wsId = id || "ws_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+    const result = await sqlPool.query(
+      `INSERT INTO workshops (id, name, code, description, staff_data, config, features)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name, code = EXCLUDED.code, description = EXCLUDED.description,
+         staff_data = EXCLUDED.staff_data, config = EXCLUDED.config, features = EXCLUDED.features,
+         updated_at = now()
+       RETURNING *`,
+      [
+        wsId,
+        String(name).trim(),
+        String(code || "").trim(),
+        String(description || "").trim(),
+        JSON.stringify(staffData || []),
+        JSON.stringify(config || {}),
+        JSON.stringify(features || {})
+      ]
+    );
+    res.json({ success: true, workshop: toWorkshop(result.rows[0]) });
   } catch (e: any) {
-    console.warn("Firestore get accounts notice (using localStore fallback):", e.message);
+    console.error("Error saving workshop:", e);
+    res.status(500).json({ error: e.message });
   }
-  res.json(localStore.accounts || []);
 });
 
-app.post("/api/accounts", express.json(), async (req, res) => {
+app.delete("/api/workshops/:id", async (req: any, res) => {
+  try {
+    if (!isSuperAdmin(req)) {
+      return res.status(403).json({ error: "Chỉ Super Admin mới xóa được phân xưởng." });
+    }
+    const result = await sqlPool.query(`DELETE FROM workshops WHERE id = $1`, [req.params.id]);
+    if (result.rowCount === 0) return res.status(404).json({ error: "Không tìm thấy phân xưởng." });
+    res.json({ success: true });
+  } catch (e: any) {
+    console.error("Error deleting workshop:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Roles a request is ever allowed to name. "super_admin" is deliberately absent from
+// anything a non-super-admin can reach, so the only way to become one is for an
+// existing super admin to grant it.
+const ASSIGNABLE_ROLES = new Set(["super_admin", "workshop_admin", "user"]);
+
+function isSuperAdmin(req: any): boolean {
+  return req.user?.role === "super_admin";
+}
+
+app.get("/api/accounts", async (req: any, res) => {
+  try {
+    // A workshop admin manages only their own workshop's accounts; the full directory
+    // (including who holds super_admin) is for super admins.
+    if (!isSuperAdmin(req)) {
+      const wsId = req.user?.workshopId;
+      if (!wsId || wsId === "all") return res.json([]);
+      const own = await sqlPool.query(
+        `SELECT * FROM user_accounts WHERE workshop_id = $1 ORDER BY created_at ASC`, [wsId]
+      );
+      return res.json(own.rows.map(toUserAccount));
+    }
+    const result = await sqlPool.query(`SELECT * FROM user_accounts ORDER BY created_at ASC`);
+    res.json(result.rows.map(toUserAccount));
+  } catch (e: any) {
+    console.error("Error fetching accounts:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Upsert: creates when `id` is absent, updates when present. Password is only
+// changed if a new one is supplied (matches the "leave blank to keep" edit form).
+app.post("/api/accounts", async (req: any, res) => {
   const { id, username, password, fullName, role, workshopId } = req.body;
-  if (!username || !fullName || !role || !workshopId) {
-    return res.status(400).json({ error: "Vui lòng nhập đủ các thông tin bắt buộc." });
+  if (!username || !String(username).trim() || !fullName || !String(fullName).trim() || !role) {
+    return res.status(400).json({ error: "Thiếu tên đăng nhập, họ tên hoặc quyền hạn." });
   }
 
-  const cleanUsername = username.trim().toLowerCase();
-  const accId = id || ("acc_" + Date.now());
-  const now = new Date().toISOString();
-
-  const isDuplicateLocal = localStore.accounts.some(a => a.username.toLowerCase() === cleanUsername && a.id !== accId);
-  if (isDuplicateLocal) {
-    return res.status(400).json({ error: "Tên đăng nhập đã được sử dụng." });
+  if (!ASSIGNABLE_ROLES.has(String(role))) {
+    return res.status(400).json({ error: "Quyền hạn không hợp lệ." });
   }
 
-  const existingLocal = localStore.accounts.find(a => a.id === accId);
-  const accountData: any = {
-    id: accId,
-    username: cleanUsername,
-    fullName: fullName.trim(),
-    role,
-    workshopId,
-    updatedAt: now,
-    createdAt: existingLocal?.createdAt || now
-  };
-
-  if (password && password.trim()) {
-    accountData.password = password.trim();
-  } else if (existingLocal?.password) {
-    accountData.password = existingLocal.password;
-  } else {
-    accountData.password = "123456";
-  }
-
-  const accIdx = localStore.accounts.findIndex(a => a.id === accId);
-  if (accIdx >= 0) {
-    localStore.accounts[accIdx] = accountData;
-  } else {
-    localStore.accounts.push(accountData);
-  }
-  persistLocalStore();
-
-  try {
-    const db = getFirestoreInstance();
-    const docRef = db.collection("accounts").doc(accId);
-    await docRef.set(accountData, { merge: true });
-  } catch (e: any) {
-    console.warn("Firestore save account notice (saved in localStore fallback):", e.message);
-  }
-
-  const { password: _, ...accountPublic } = accountData;
-  res.json({
-    success: true,
-    account: accountPublic
-  });
-});
-
-app.delete("/api/accounts/:id", async (req, res) => {
-  const { id } = req.params;
-  localStore.accounts = localStore.accounts.filter(a => a.id !== id && a.username.toLowerCase() !== id.toLowerCase());
-  persistLocalStore();
-
-  try {
-    const db = getFirestoreInstance();
-    await db.collection("accounts").doc(id).delete();
-
-    const querySnap = await db.collection("accounts").where("username", "==", id.toLowerCase()).get();
-    if (!querySnap.empty) {
-      const batch = db.batch();
-      querySnap.forEach(doc => {
-        batch.delete(doc.ref);
-      });
-      await batch.commit();
+  // req.user is absent only on the empty-database bootstrap path allowed by requireAuth.
+  const bootstrapping = !req.user;
+  if (!bootstrapping && !isSuperAdmin(req)) {
+    // A workshop admin may manage staff logins inside their own workshop and nothing
+    // more: they cannot grant super_admin, and cannot touch another workshop.
+    if (String(role) === "super_admin") {
+      return res.status(403).json({ error: "Chỉ Super Admin mới cấp được quyền Super Admin." });
     }
-  } catch (e: any) {
-    console.warn("Firestore delete account notice:", e.message);
-  }
-  res.json({ success: true });
-});
-
-app.get("/api/signatures", async (req, res) => {
-  try {
-    const db = getFirestoreInstance();
-    const snapshot = await db.collection("signatures").get();
-    const result: Record<string, string> = {};
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      if (data.name && data.data) {
-        result[data.name] = data.data;
-      }
-    });
-    if (Object.keys(result).length > 0) {
-      localStore.signatures = result;
-      persistLocalStore();
-      return res.json(result);
+    if (String(workshopId || "") !== String(req.user.workshopId || "")) {
+      return res.status(403).json({ error: "Bạn chỉ quản lý được tài khoản trong phân xưởng của mình." });
     }
-  } catch (e: any) {
-    console.warn("Firestore signatures read notice:", e.message);
-  }
-  res.json(localStore.signatures || {});
-});
-
-app.post("/api/signatures", express.json({ limit: '10mb' }), async (req, res) => {
-  const { name, data } = req.body;
-  if (!name || !data) {
-    return res.status(400).json({ error: "Name and data are required" });
-  }
-  localStore.signatures[name] = data;
-  persistLocalStore();
-
-  try {
-    const db = getFirestoreInstance();
-    await db.collection("signatures").doc(name).set({
-      name,
-      data,
-      updatedAt: new Date().toISOString()
-    });
-  } catch (e: any) {
-    console.warn("Firestore signature save notice:", e.message);
-  }
-  res.json({ success: true });
-});
-
-app.post("/api/signatures/batch", express.json({ limit: '50mb' }), async (req, res) => {
-  const { items } = req.body;
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ error: "Items array is required" });
-  }
-
-  for (const item of items) {
-    if (item.name && item.data) {
-      localStore.signatures[item.name] = item.data;
-      try {
-        const db = getFirestoreInstance();
-        await db.collection("signatures").doc(item.name).set({
-          name: item.name,
-          data: item.data,
-          updatedAt: new Date().toISOString()
-        });
-      } catch (e: any) {
-        console.warn("Firestore batch signature save notice:", e.message);
+    if (id) {
+      const target = await sqlPool.query(`SELECT role, workshop_id FROM user_accounts WHERE id = $1`, [id]);
+      const t = target.rows[0];
+      if (!t) return res.status(404).json({ error: "Không tìm thấy tài khoản." });
+      if (t.role === "super_admin" || String(t.workshop_id || "") !== String(req.user.workshopId || "")) {
+        return res.status(403).json({ error: "Không có quyền sửa tài khoản này." });
       }
     }
   }
-  persistLocalStore();
-  res.json({ success: true, count: items.length });
+
+  // "all" (super admin, not tied to one workshop) isn't a real workshop id, so the
+  // workshop_id FK would reject it — store NULL instead; toUserAccount() maps NULL back to "all".
+  const normalizedWorkshopId = workshopId && workshopId !== "all" ? workshopId : null;
+
+  try {
+    if (id) {
+      const existing = await sqlPool.query(`SELECT password_hash FROM user_accounts WHERE id = $1`, [id]);
+      if (existing.rows.length === 0) return res.status(404).json({ error: "Không tìm thấy tài khoản." });
+
+      const dup = await sqlPool.query(
+        `SELECT id FROM user_accounts WHERE lower(username) = lower(trim($1)) AND id <> $2`,
+        [username, id]
+      );
+      if (dup.rows.length > 0) return res.status(400).json({ error: "Tên đăng nhập đã được dùng bởi tài khoản khác." });
+
+      const passwordHash = password ? hashPassword(password) : existing.rows[0].password_hash;
+      // A password change is how you lock out someone who has your credentials or a
+      // stolen session cookie, so it has to end the existing sessions too.
+      if (password) {
+        await sqlPool.query(`DELETE FROM user_sessions WHERE user_id = $1`, [id]);
+      }
+      const result = await sqlPool.query(
+        `UPDATE user_accounts SET username=$1, password_hash=$2, full_name=$3, role=$4, workshop_id=$5, updated_at=now()
+         WHERE id=$6 RETURNING *`,
+        [String(username).trim(), passwordHash, String(fullName).trim(), role, normalizedWorkshopId, id]
+      );
+      return res.json({ success: true, account: toUserAccount(result.rows[0]) });
+    }
+
+    const dup = await sqlPool.query(`SELECT id FROM user_accounts WHERE lower(username) = lower(trim($1))`, [username]);
+    if (dup.rows.length > 0) return res.status(400).json({ error: "Tên đăng nhập đã tồn tại." });
+
+    const newId = "user_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+    const passwordHash = hashPassword(password || "123456");
+    const result = await sqlPool.query(
+      `INSERT INTO user_accounts (id, username, password_hash, full_name, role, workshop_id)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [newId, String(username).trim(), passwordHash, String(fullName).trim(), role, normalizedWorkshopId]
+    );
+    res.json({ success: true, account: toUserAccount(result.rows[0]) });
+  } catch (e: any) {
+    console.error("Error saving account:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/accounts/:id", async (req: any, res) => {
+  try {
+    if (!isSuperAdmin(req)) {
+      const target = await sqlPool.query(`SELECT role, workshop_id FROM user_accounts WHERE id = $1`, [req.params.id]);
+      const t = target.rows[0];
+      if (!t) return res.status(404).json({ error: "Không tìm thấy tài khoản." });
+      if (t.role === "super_admin" || String(t.workshop_id || "") !== String(req.user?.workshopId || "")) {
+        return res.status(403).json({ error: "Không có quyền xóa tài khoản này." });
+      }
+    }
+    const result = await sqlPool.query(`DELETE FROM user_accounts WHERE id = $1`, [req.params.id]);
+    if (result.rowCount === 0) return res.status(404).json({ error: "Không tìm thấy tài khoản." });
+    res.json({ success: true });
+  } catch (e: any) {
+    console.error("Error deleting account:", e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // App Settings Endpoints (Staff List & Config)
 app.get("/api/app-settings", async (req, res) => {
   try {
-    const db = getFirestoreInstance();
-    const doc = await db.collection("config").doc("app_settings").get();
-    if (doc.exists) {
-      const data = doc.data();
-      if (data) {
-        const deserialized = deserializeFromFirestore(data);
-        if (!Array.isArray(deserialized.staffData)) {
-          deserialized.staffData = [];
-        } else {
-          // Perform server-side migration for 'Trực phụ cơ MR' -> 'Trực phụ máy MR'
-          let hasMigration = false;
-          const migrated = deserialized.staffData.map((row: any) => {
-            if (Array.isArray(row) && row[0] === 'Trực phụ cơ MR') {
-              hasMigration = true;
-              return ['Trực phụ máy MR', ...row.slice(1)];
-            }
-            return row;
-          });
-          if (hasMigration) {
-            deserialized.staffData = migrated;
-            try {
-              await db.collection("config").doc("app_settings").set(serializeForFirestore({
-                staffData: migrated
-              }), { merge: true });
-            } catch (saveErr) {}
-          }
-        }
+    const data = await readConfig("app_settings");
+    if (!data) {
+      return res.json({ staffData: null, config: null });
+    }
 
-        // Migrate Zalo Webhook URL
-        if (
-          deserialized.config && 
-          deserialized.config.zaloWebhookUrl && 
-          (
-            deserialized.config.zaloWebhookUrl.includes("cookies-blue-pen-bikini.trycloudflare.com") || 
-            deserialized.config.zaloWebhookUrl.includes("specialists-intro-exterior-advocacy.trycloudflare.com") ||
-            deserialized.config.zaloWebhookUrl.includes("committed-intellectual-lunch-clone.trycloudflare.com")
-          )
-        ) {
-          deserialized.config.zaloWebhookUrl = "https://vhialy.dpdns.org/webhook/notify";
-          try {
-            await db.collection("config").doc("app_settings").set(serializeForFirestore({
-              config: deserialized.config
-            }), { merge: true });
-          } catch (saveErr) {}
-        }
-
-        localStore.appSettings = deserialized;
-        persistLocalStore();
-        return res.json(deserialized);
+    if (typeof data.staffData === 'string') {
+      try {
+        data.staffData = JSON.parse(data.staffData);
+      } catch (e) {
+        console.error("Failed to parse staffData JSON", e);
+        data.staffData = []; // Fallback to empty array on parse error
       }
     }
+
+    let needsSave = false;
+
+    // Ensure it's an array
+    if (!Array.isArray(data.staffData)) {
+      data.staffData = [];
+    } else {
+      // Perform server-side migration for 'Trực phụ cơ MR' -> 'Trực phụ máy MR'
+      let hasMigration = false;
+      const migrated = data.staffData.map((row: any) => {
+        if (Array.isArray(row) && row[0] === 'Trực phụ cơ MR') {
+          hasMigration = true;
+          return ['Trực phụ máy MR', ...row.slice(1)];
+        }
+        return row;
+      });
+      if (hasMigration) {
+        data.staffData = migrated;
+        needsSave = true;
+        console.log("Migrated 'Trực phụ cơ MR' to 'Trực phụ máy MR'.");
+      }
+    }
+
+    // Migrate Zalo Webhook URL
+    if (
+      data.config &&
+      data.config.zaloWebhookUrl &&
+      (
+        data.config.zaloWebhookUrl.includes("cookies-blue-pen-bikini.trycloudflare.com") ||
+        data.config.zaloWebhookUrl.includes("specialists-intro-exterior-advocacy.trycloudflare.com") ||
+        data.config.zaloWebhookUrl.includes("committed-intellectual-lunch-clone.trycloudflare.com")
+      )
+    ) {
+      data.config.zaloWebhookUrl = "https://vhialy.dpdns.org/webhook/notify";
+      needsSave = true;
+      console.log("Migrated 'zaloWebhookUrl' to 'vhialy.dpdns.org'.");
+    }
+
+    if (needsSave) {
+      // staffData is stored as a JSON string, matching how the POST handler writes it
+      await writeConfig("app_settings", { ...data, staffData: JSON.stringify(data.staffData) });
+    }
+
+    res.json(data);
   } catch (e: any) {
-    console.warn("Firestore get app-settings notice (using localStore fallback):", e.message);
+    console.error("Error fetching app settings:", e);
+    res.status(500).json({ error: e.message });
   }
-
-  if (localStore.appSettings) {
-    return res.json(localStore.appSettings);
-  }
-
-  const defaultSettings = {
-    staffData: DEFAULT_WORKSHOPS[0]?.staffData || [],
-    config: DEFAULT_WORKSHOPS[0]?.config || {}
-  };
-  res.json(defaultSettings);
 });
 
 app.post("/api/app-settings", express.json({ limit: '5mb' }), async (req, res) => {
   const { staffData, config } = req.body;
-
-  localStore.appSettings = { staffData, config };
-  persistLocalStore();
-
   try {
-    const db = getFirestoreInstance();
-    const docToSave = serializeForFirestore({
-      staffData,
+    // Merge into the stored document so unrelated keys (e.g. staffBackups) survive
+    const existing = (await readConfig("app_settings")) || {};
+    const ok = await writeConfig("app_settings", {
+      ...existing,
+      staffData: JSON.stringify(staffData),
       config,
       updatedAt: new Date().toISOString()
     });
-    
-    await db.collection("config").doc("app_settings").set(docToSave, { merge: true });
+    if (!ok) throw new Error(lastDbError || "unknown");
+    res.json({ success: true });
   } catch (e: any) {
-    console.warn("Firestore save app-settings notice (saved in localStore fallback):", e.message);
+    console.error("Error saving app settings:", e);
+    res.status(500).json({ error: e.message });
   }
-
-  res.json({ success: true });
 });
 
 app.get("/api/debug/env", (req, res) => {
@@ -1602,730 +1749,111 @@ app.get("/api/auth/google/callback", async (req, res) => {
 
 app.get("/api/auth/status", async (req, res) => {
   const cookieTokensStr = req.cookies.google_tokens;
-  let firestoreTokens = await loadTokens();
-  
-  // Auto-sync: If cookie has tokens but Firestore doesn't, try to save them
-  if (cookieTokensStr && !firestoreTokens) {
-    console.log("Cookie exists but Firestore is empty. Attempting auto-sync...");
+  let storedTokens = await loadTokens();
+
+  // Auto-sync: If cookie has tokens but the database doesn't, try to save them
+  if (cookieTokensStr && !storedTokens) {
+    console.log("Cookie exists but database is empty. Attempting auto-sync...");
     try {
       const tokens = JSON.parse(cookieTokensStr);
       await saveTokens(tokens);
-      firestoreTokens = await loadTokens();
+      storedTokens = await loadTokens();
     } catch (e) {
       console.error("Auto-sync failed:", e);
     }
   }
-  
-  res.json({ 
-    authenticated: !!cookieTokensStr || !!firestoreTokens,
-    source: cookieTokensStr ? "cookie" : (firestoreTokens ? "firestore" : "none"),
-    sync_attempted: cookieTokensStr && !firestoreTokens
+
+  res.json({
+    authenticated: !!cookieTokensStr || !!storedTokens,
+    source: cookieTokensStr ? "cookie" : (storedTokens ? "database" : "none"),
+    sync_attempted: cookieTokensStr && !storedTokens
   });
 });
 
-const DEFAULT_LEAVE_SPREADSHEET_ID = '1m8B-CVJEyzt5KhJ-I_1hFTvWczz1jl7PPm_7PNScYYQ';
-const LEAVE_SPREADSHEET_ID = DEFAULT_LEAVE_SPREADSHEET_ID;
-
-function extractSpreadsheetId(input?: string): string {
-  if (!input || typeof input !== 'string' || !input.trim()) {
-    return DEFAULT_LEAVE_SPREADSHEET_ID;
-  }
-  const trimmed = input.trim();
-  const match = trimmed.match(/\/d\/([a-zA-Z0-9-_]+)/);
-  if (match && match[1]) {
-    return match[1];
-  }
-  if (/^[a-zA-Z0-9-_]{20,}$/.test(trimmed)) {
-    return trimmed;
-  }
-  return DEFAULT_LEAVE_SPREADSHEET_ID;
-}
-
-function resolveSpreadsheetId(req?: any): string {
-  if (!req) return DEFAULT_LEAVE_SPREADSHEET_ID;
-  const candidate = 
-    req.body?.spreadsheetId ||
-    req.body?.googleSheetUrl ||
-    req.body?.leaveSpreadsheetUrl ||
-    req.query?.spreadsheetId ||
-    req.query?.googleSheetUrl ||
-    req.query?.leaveSpreadsheetUrl;
-
-  if (candidate && typeof candidate === 'string' && candidate.trim()) {
-    return extractSpreadsheetId(candidate);
-  }
-
-  if (localStore?.appSettings?.config?.googleSheetUrl) {
-    return extractSpreadsheetId(localStore.appSettings.config.googleSheetUrl);
-  }
-  if (localStore?.appSettings?.config?.leaveSpreadsheetUrl) {
-    return extractSpreadsheetId(localStore.appSettings.config.leaveSpreadsheetUrl);
-  }
-
-  return DEFAULT_LEAVE_SPREADSHEET_ID;
-}
-
-async function updateAnnualLeaveUsedDays(sheets: any, spreadsheetId: string) {
-  try {
-    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-    const sheetObjects = spreadsheet.data.sheets || [];
-    const sheetTitles = sheetObjects.map((s: any) => s.properties?.title || "");
-
-    const annualLeaveSheetName = sheetTitles.find(t => t.toLowerCase().trim() === "số ngày phép") || "Số ngày phép";
-
-    // Find all workshop leave sheets
-    const leaveSheets = sheetTitles.filter(t => t.toLowerCase().startsWith("danh_sach_nghi"));
-
-    const usedDaysMap = new Map<string, number>();
-
-    for (const sheetName of leaveSheets) {
-      try {
-        const res = await sheets.spreadsheets.values.get({
-          spreadsheetId,
-          range: `'${sheetName}'!A1:M1000`
-        });
-        const allRows = res.data.values || [];
-        if (allRows.length <= 1) continue;
-
-        const headerRow = allRows[0] || [];
-        let nameCol = 1;
-        let kipCol = 4;
-        let startCol = 5;
-        let endCol = 6;
-        let numDaysCol = -1;
-        let statusCol = 10;
-
-        for (let c = 0; c < headerRow.length; c++) {
-          const hText = removeVietnameseAccents(String(headerRow[c] || '')).toLowerCase().trim();
-          if (hText.includes("ho va ten") || hText.includes("ho ten") || hText === "ten" || hText.includes("nhan su")) {
-            nameCol = c;
-          } else if (hText.includes("kip") || hText === "kip") {
-            kipCol = c;
-          } else if (hText.includes("so ca") || hText.includes("so ngay nghi") || hText.includes("so ca nghi") || hText === "so ngay") {
-            numDaysCol = c;
-          } else if (hText.includes("tu ngay") || hText.includes("ngay bat dau") || hText === "tu") {
-            startCol = c;
-          } else if (hText.includes("den ngay") || hText.includes("ngay ket thuc") || hText === "den") {
-            endCol = c;
-          } else if (hText.includes("trang thai") || hText.includes("tinh trang")) {
-            statusCol = c;
-          }
-        }
-
-        const dataRows = allRows.slice(1);
-        for (const r of dataRows) {
-          if (!r || r.length <= nameCol) continue;
-          const personName = (r[nameCol] || '').trim();
-          if (!personName) continue;
-
-          const status = statusCol >= 0 && statusCol < r.length ? (r[statusCol] || '').trim().toLowerCase() : '';
-          if (status === 'đã hủy' || status === 'từ chối' || status === 'da huy' || status === 'tu choi') continue;
-
-          let days = 1;
-          if (numDaysCol >= 0 && numDaysCol < r.length && r[numDaysCol] && !isNaN(parseFloat(r[numDaysCol]))) {
-            days = Math.max(0, parseFloat(r[numDaysCol]));
-          } else {
-            const startDate = startCol >= 0 && startCol < r.length ? r[startCol] : '';
-            const endDate = endCol >= 0 && endCol < r.length ? r[endCol] : startDate;
-            const kipVal = kipCol >= 0 && kipCol < r.length ? r[kipCol] : '';
-            days = calculateLeaveDays(startDate, endDate, kipVal);
-          }
-
-          const currentTotal = usedDaysMap.get(personName.toLowerCase()) || 0;
-          usedDaysMap.set(personName.toLowerCase(), currentTotal + days);
-        }
-      } catch (e) {}
-    }
-
-    // Now read sheet "Số ngày phép"
-    const annualRes = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `'${annualLeaveSheetName}'!A1:I500`
-    });
-    const annualRows = annualRes.data.values || [];
-    if (annualRows.length <= 1) return;
-
-    const updates: any[] = [];
-
-    for (let i = 1; i < annualRows.length; i++) {
-      const row = annualRows[i];
-      if (!row || !row[1]) continue;
-      const personName = String(row[1]).trim();
-      const normName = personName.toLowerCase();
-      const normAccents = removeVietnameseAccents(normName);
-
-      // Find matching used days
-      let usedDays = usedDaysMap.get(normName);
-      if (usedDays === undefined) {
-        for (const [key, val] of usedDaysMap.entries()) {
-          if (removeVietnameseAccents(key) === normAccents) {
-            usedDays = val;
-            break;
-          }
-        }
-      }
-      if (usedDays === undefined) usedDays = 0;
-
-      const rowIndex = i + 1; // 1-indexed row in Sheets
-      const oldLeaves = parseFloat(String(row[4] || '0')) || 0;
-      const newLeaves = parseFloat(String(row[5] || '12')) || 12;
-
-      const calc = calculateLeaveBalanceLogic(oldLeaves, newLeaves, usedDays);
-
-      const formulaStr = `=IF(MONTH(TODAY())<=3; MAX(0; E${rowIndex} + F${rowIndex} - G${rowIndex}); MAX(0; F${rowIndex} - MAX(0; G${rowIndex} - E${rowIndex})))`;
-      
-      updates.push({
-        range: `'${annualLeaveSheetName}'!G${rowIndex}:I${rowIndex}`,
-        values: [[
-          usedDays,
-          formulaStr,
-          calc.note
-        ]]
-      });
-    }
-
-    if (updates.length > 0) {
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          valueInputOption: "USER_ENTERED",
-          data: updates
-        }
-      });
-      console.log(`Updated used leave days for ${updates.length} staff members in '${annualLeaveSheetName}'.`);
-    }
-  } catch (err: any) {
-    console.error("updateAnnualLeaveUsedDays error:", err.message);
-  }
-}
-
-async function ensureAnnualLeaveSheetExists(sheets: any, spreadsheetId: string, staffData?: string[][]): Promise<string> {
-  const targetSheetName = "Số ngày phép";
-  const headerValues = [
-    "STT", 
-    "Họ và tên", 
-    "Chức danh", 
-    "Kíp", 
-    "Phép năm cũ còn lại", 
-    "Phép năm mới được hưởng", 
-    "Phép đã nghỉ năm nay", 
-    "Phép còn lại hiện tại", 
-    "Ghi chú"
-  ];
-
-  try {
-    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-    const sheetObjects = spreadsheet.data.sheets || [];
-    const sheetNames = sheetObjects.map((s: any) => s.properties?.title || "");
-
-    const existingName = sheetNames.find(n => n.toLowerCase().trim() === "số ngày phép");
-
-    if (!existingName) {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          requests: [
-            {
-              addSheet: {
-                properties: {
-                  title: targetSheetName
-                }
-              }
-            }
-          ]
-        }
-      });
-
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `'${targetSheetName}'!A1:I1`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [headerValues]
-        }
-      });
-      console.log(`Created sheet '${targetSheetName}' and written 9-column headers.`);
-    } else {
-      // Ensure header has all 9 columns
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `'${existingName}'!A1:I1`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [headerValues]
-        }
-      });
-    }
-
-    const actualSheetName = existingName || targetSheetName;
-
-    if (staffData && Array.isArray(staffData) && staffData.length > 0) {
-      const response = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: `'${actualSheetName}'!A1:I500`
-      });
-      const rows = response.data.values || [];
-      const existingNames = new Set<string>();
-      
-      for (let i = 1; i < rows.length; i++) {
-        if (rows[i] && rows[i][1]) {
-          existingNames.add(rows[i][1].toString().trim().toLowerCase());
-        }
-      }
-
-      const rowsToAppend: any[][] = [];
-      let currentStt = rows.length > 1 ? rows.length : 1;
-
-      for (const row of staffData) {
-        if (!Array.isArray(row) || row.length === 0) continue;
-        const title = (row[0] || '').trim();
-        for (let k = 1; k <= 5; k++) {
-          const personName = row[k] ? row[k].trim() : '';
-          if (personName && !existingNames.has(personName.toLowerCase())) {
-            existingNames.add(personName.toLowerCase());
-            const rowIndex = currentStt + 1; // Row index in Google Sheets
-            const formulaStr = `=IF(MONTH(TODAY())<=3; MAX(0; E${rowIndex} + F${rowIndex} - G${rowIndex}); MAX(0; F${rowIndex} - MAX(0; G${rowIndex} - E${rowIndex})))`;
-            rowsToAppend.push([
-              currentStt++,
-              personName,
-              title,
-              `Kíp ${k}`,
-              0,  // Phép năm cũ còn lại
-              12, // Phép năm mới được hưởng
-              0,  // Phép đã nghỉ năm nay
-              formulaStr, // Phép còn lại hiện tại
-              "Hạn phép năm cũ: hết ngày 31/03"
-            ]);
-          }
-        }
-      }
-
-      if (rowsToAppend.length > 0) {
-        await sheets.spreadsheets.values.append({
-          spreadsheetId,
-          range: `'${actualSheetName}'!A:I`,
-          valueInputOption: "USER_ENTERED",
-          requestBody: {
-            values: rowsToAppend
-          }
-        });
-        console.log(`Appended ${rowsToAppend.length} staff members to '${actualSheetName}'.`);
-      }
-    }
-
-    // Auto update used leave days from all leave requests
-    updateAnnualLeaveUsedDays(sheets, spreadsheetId).catch(() => {});
-
-    return actualSheetName;
-  } catch (e: any) {
-    console.error(`Error in ensureAnnualLeaveSheetExists:`, e.message);
-    return targetSheetName;
-  }
-}
-
-function formatWorkshopSheetTitle(workshopId?: string): string {
-  if (!workshopId || workshopId === 'all') {
-    return "DANH_SACH_NGHI";
-  }
-  const cleanId = workshopId.trim().replace(/[^a-zA-Z0-9_]/g, '_');
-  return `DANH_SACH_NGHI_${cleanId}`;
-}
-
-async function getOrEnsureLeaveSheetTitle(sheets: any, spreadsheetId: string, workshopId?: string): Promise<string> {
-  const desiredTitle = formatWorkshopSheetTitle(workshopId);
-  try {
-    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-    const sheetObjects = spreadsheet.data.sheets || [];
-    const sheetNames = sheetObjects.map((s: any) => s.properties?.title || "");
-
-    // 1. Exact match
-    if (sheetNames.includes(desiredTitle)) {
-      return desiredTitle;
-    }
-
-    // 2. Case-insensitive, substring, or alias match
-    if (workshopId && workshopId !== 'all') {
-      const targetLower = workshopId.trim().toLowerCase();
-      const existingMatch = sheetNames.find(name => {
-        const nLower = name.toLowerCase();
-        if (!nLower.startsWith("danh_sach_nghi")) return false;
-        const sub = nLower.replace("danh_sach_nghi_", "").replace("danh_sach_nghi", "");
-        if (!sub) return false;
-        return nLower.includes(targetLower) || 
-               targetLower.includes(sub) || 
-               (targetLower.includes("vanhanh") && sub.includes("vanhanh")) ||
-               (targetLower.includes("vh") && sub.includes("vanhanh")) ||
-               (targetLower.includes("suachua") && sub.includes("suachua")) ||
-               (targetLower.includes("sc") && sub.includes("suachua"));
-      });
-      if (existingMatch) return existingMatch;
-    } else {
-      const defaultMatch = sheetNames.find(name => name.toLowerCase().trim() === "danh_sach_nghi");
-      if (defaultMatch) return defaultMatch;
-    }
-
-    // 3. If not found, create new sheet tab with desiredTitle
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: [
-          {
-            addSheet: {
-              properties: {
-                title: desiredTitle
-              }
-            }
-          }
-        ]
-      }
-    });
-
-    // Append headers
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `'${desiredTitle}'!A1:M1`,
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [[
-          "Mã đơn", 
-          "Họ và tên", 
-          "Năm sinh", 
-          "Chức danh", 
-          "Kíp", 
-          "Từ ngày", 
-          "Đến ngày", 
-          "Lý do", 
-          "Điện thoại", 
-          "Địa điểm", 
-          "Trạng thái", 
-          "Ngày tạo",
-          "Phân xưởng"
-        ]]
-      }
-    });
-    console.log(`Created leave sheet '${desiredTitle}' and headers.`);
-    return desiredTitle;
-  } catch (e: any) {
-    console.error(`Error ensuring leave sheet for ${workshopId}:`, e.message);
-    return desiredTitle;
-  }
-}
-
-async function ensureLeaveSheetExists(sheets: any, spreadsheetId: string, workshopId?: string) {
-  return await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId, workshopId);
-}
-
-async function syncPendingLeavesToSheets(sheets: any, spreadsheetId: string) {
-  try {
-    const pendingMap = new Map<string, any>();
-
-    // 1. Collect from localStore
-    if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
-      localStore.pendingLeaves.forEach((item: any) => {
-        if (item && item.id) {
-          pendingMap.set(item.id, item);
-        }
-      });
-    }
-
-    // 2. Collect from Firestore
-    try {
-      const db = getFirestoreInstance();
-      const snapshot = await db.collection("pending_leaves").get();
-      snapshot.forEach(doc => {
-        const item = doc.data();
-        pendingMap.set(doc.id, { id: doc.id, ...item });
-      });
-    } catch (dbErr: any) {
-      console.warn("Notice reading Firestore pending leaves for sync:", dbErr.message);
-    }
-
-    if (pendingMap.size === 0) return;
-
-    console.log(`Found ${pendingMap.size} pending leaves to sync to Google Sheets...`);
-    
-    const pendingByWs: Record<string, { docId: string; data: any }[]> = {};
-    pendingMap.forEach((item, docId) => {
-      const wsId = item.workshopId || 'default';
-      if (!pendingByWs[wsId]) pendingByWs[wsId] = [];
-      pendingByWs[wsId].push({ docId, data: item });
-    });
-
-    const syncedDocIds: string[] = [];
-
-    for (const [wsId, items] of Object.entries(pendingByWs)) {
-      const targetTitle = await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId, wsId === 'default' ? undefined : wsId);
-      const rowsToAppend = items.map(item => [
-        item.docId,
-        item.data.name,
-        item.data.birthYear || "",
-        item.data.chucDanh,
-        String(item.data.kip),
-        item.data.startDate,
-        item.data.endDate,
-        item.data.reason || "Giải quyết việc riêng gia đình",
-        item.data.phone || "",
-        item.data.location || "Gia Lai",
-        item.data.status || "Chờ phân ca",
-        item.data.dateStr || item.data.createdAt || "",
-        item.data.workshopId || (wsId === 'default' ? "" : wsId)
-      ]);
-
-      await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range: `'${targetTitle}'!A:M`,
-        valueInputOption: "RAW",
-        requestBody: {
-          values: rowsToAppend
-        }
-      });
-
-      items.forEach(i => syncedDocIds.push(i.docId));
-    }
-
-    if (syncedDocIds.length > 0) {
-      // Clear from localStore
-      if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
-        localStore.pendingLeaves = localStore.pendingLeaves.filter((p: any) => !syncedDocIds.includes(p.id));
-        persistLocalStore();
-      }
-
-      // Clear from Firestore
-      try {
-        const db = getFirestoreInstance();
-        const batch = db.batch();
-        syncedDocIds.forEach(id => {
-          batch.delete(db.collection("pending_leaves").doc(id));
-        });
-        await batch.commit();
-      } catch (e: any) {}
-
-      console.log(`Successfully synced ${syncedDocIds.length} pending leaves to Google Sheets.`);
-    }
-  } catch (err: any) {
-    console.error("Failed to sync pending leaves to Google Sheets:", err.message);
-  }
-}
-
 app.get("/api/sheets/leave-requests", async (req, res) => {
-  const { workshopId } = req.query;
-  const targetWsId = typeof workshopId === 'string' ? workshopId : undefined;
-
-  const oauth2Client = getOAuth2Client();
-  let tokens = null;
-  const tokensStr = req.cookies.google_tokens;
-  if (tokensStr) {
-    try { tokens = JSON.parse(tokensStr); } catch (e) {}
-  }
-  if (!tokens) tokens = await loadTokens();
-
-  // FALLBACK: If not connected to Google Sheets, load from Firestore or localStore pending_leaves
-  if (!tokens) {
-    const pendingLeavesMap = new Map<string, any>();
-    
-    // 1. Add from localStore
-    if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
-      localStore.pendingLeaves.forEach((item: any) => {
-        pendingLeavesMap.set(item.id, {
-          id: item.id,
-          name: item.name || "",
-          birthYear: item.birthYear || "",
-          chucDanh: item.chucDanh || "",
-          kip: String(item.kip || ""),
-          startDate: item.startDate || "",
-          endDate: item.endDate || "",
-          reason: item.reason || "",
-          phone: item.phone || "",
-          location: item.location || "",
-          status: item.status || "Chờ phân ca",
-          createdAt: item.createdAt || item.dateStr || "",
-          workshopId: item.workshopId || "",
-          isPendingSync: true
-        });
-      });
-    }
-
-    // 2. Add from Firestore
-    try {
-      const db = getFirestoreInstance();
-      const snapshot = await db.collection("pending_leaves").get();
-      snapshot.forEach(doc => {
-        const item = doc.data();
-        pendingLeavesMap.set(doc.id, {
-          id: doc.id,
-          name: item.name || "",
-          birthYear: item.birthYear || "",
-          chucDanh: item.chucDanh || "",
-          kip: String(item.kip || ""),
-          startDate: item.startDate || "",
-          endDate: item.endDate || "",
-          reason: item.reason || "",
-          phone: item.phone || "",
-          location: item.location || "",
-          status: item.status || "Chờ phân ca",
-          createdAt: item.dateStr || item.createdAt || "",
-          workshopId: item.workshopId || "",
-          isPendingSync: true
-        });
-      });
-    } catch (dbErr: any) {
-      console.warn("Firestore pending leaves read notice (using localStore fallback):", dbErr.message);
-    }
-
-    const result = Array.from(pendingLeavesMap.values());
-    return res.json(result);
-  }
-
-  oauth2Client.setCredentials(tokens);
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const spreadsheetId = resolveSpreadsheetId(req);
-
+  const workshopId = req.query.workshopId;
+  if (!workshopId) return res.status(400).json({ error: "Thiếu phân xưởng." });
   try {
-    await syncPendingLeavesToSheets(sheets, spreadsheetId);
+    const result = await sqlPool.query(
+      `SELECT r.id, r.name, r.birth_year, r.chuc_danh, r.kip, r.start_date, r.end_date, r.reason, r.phone, r.location,
+              r.status, r.created_at, r.leave_year, r.has_leave_permit, r.distance_km, r.travel_days, r.leave_days,
+              COALESCE(
+                (SELECT json_agg(json_build_object('year', a.leave_year, 'days', a.days) ORDER BY a.leave_year)
+                 FROM leave_allocations a WHERE a.leave_id = r.id),
+                '[]'::json
+              ) AS allocations
+       FROM leave_requests r WHERE r.workshop_id = $1 ORDER BY r.inserted_at ASC`,
+      [workshopId]
+    );
 
-    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-    const allSheetObjects = spreadsheet.data.sheets || [];
-    const allSheetTitles = allSheetObjects.map((s: any) => s.properties?.title || "");
-
-    let sheetsToRead: string[] = [];
-    if (targetWsId && targetWsId !== 'all') {
-      const sheetTitle = await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId, targetWsId);
-      sheetsToRead = [sheetTitle];
-    } else {
-      sheetsToRead = allSheetTitles.filter(t => t.toLowerCase().startsWith("danh_sach_nghi"));
-      if (sheetsToRead.length === 0) {
-        const defaultTitle = await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId);
-        sheetsToRead = [defaultTitle];
-      }
-    }
-
-    const leaveRequests: any[] = [];
-
-    // Also include any leftover pending leaves from localStore and Firestore cache
-    const pendingMap = new Map<string, any>();
-    if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
-      localStore.pendingLeaves.forEach(item => {
-        pendingMap.set(item.id, {
-          id: item.id,
-          name: item.name || "",
-          birthYear: item.birthYear || "",
-          chucDanh: item.chucDanh || "",
-          kip: String(item.kip || ""),
-          startDate: item.startDate || "",
-          endDate: item.endDate || "",
-          reason: item.reason || "",
-          phone: item.phone || "",
-          location: item.location || "",
-          status: item.status || "Chờ phân ca",
-          createdAt: item.createdAt || item.dateStr || "",
-          workshopId: item.workshopId || "",
-          isPendingSync: true
-        });
-      });
-    }
-
-    try {
-      const db = getFirestoreInstance();
-      const snapshot = await db.collection("pending_leaves").get();
-      snapshot.forEach(doc => {
-        const item = doc.data();
-        pendingMap.set(doc.id, {
-          id: doc.id,
-          name: item.name || "",
-          birthYear: item.birthYear || "",
-          chucDanh: item.chucDanh || "",
-          kip: String(item.kip || ""),
-          startDate: item.startDate || "",
-          endDate: item.endDate || "",
-          reason: item.reason || "",
-          phone: item.phone || "",
-          location: item.location || "",
-          status: item.status || "Chờ phân ca",
-          createdAt: item.dateStr || item.createdAt || "",
-          workshopId: item.workshopId || "",
-          isPendingSync: true
-        });
-      });
-    } catch (dbErr) {}
-
-    pendingMap.forEach(item => leaveRequests.push(item));
-
-    for (const sheetTitle of sheetsToRead) {
-      try {
-        const response = await sheets.spreadsheets.values.get({
-          spreadsheetId,
-          range: `'${sheetTitle}'!A1:M2000`
-        });
-        
-        const rows = response.data.values;
-        if (!rows || rows.length <= 1) continue;
-
-        const headers = rows[0];
-        for (let i = 1; i < rows.length; i++) {
-          const row = rows[i];
-          if (!row || row.length === 0 || !row[0]) continue;
-          
-          const item: any = { rowIndex: i + 1, sheetTitle };
-          headers.forEach((header: string, index: number) => {
-            item[header] = row[index] || "";
-          });
-          
-          const leaveChucDanh = (item["Chức danh"] || "") === "Trực phụ cơ MR" ? "Trực phụ máy MR" : (item["Chức danh"] || "");
-          
-          if (leaveRequests.some(l => l.id === item["Mã đơn"])) continue;
-
-          const leave = {
-            id: item["Mã đơn"] || "",
-            name: item["Họ và tên"] || "",
-            birthYear: item["Năm sinh"] || "",
-            chucDanh: leaveChucDanh,
-            kip: item["Kíp"] || "",
-            startDate: item["Từ ngày"] || "",
-            endDate: item["Đến ngày"] || "",
-            reason: item["Lý do"] || "",
-            phone: item["Điện thoại"] || "",
-            location: item["Địa điểm"] || "",
-            status: item["Trạng thái"] || "",
-            createdAt: item["Ngày tạo"] || "",
-            workshopId: item["Phân xưởng"] || item.workshopId || "",
-            rowIndex: item.rowIndex,
-            sheetTitle
-          };
-          leaveRequests.push(leave);
-        }
-      } catch (sheetErr: any) {
-        console.error(`Error reading sheet ${sheetTitle}:`, sheetErr.message);
-      }
-    }
+    const leaveRequests = result.rows.map((row: any) => ({
+      id: row.id || "",
+      name: row.name || "",
+      birthYear: row.birth_year || "",
+      chucDanh: row.chuc_danh || "",
+      kip: row.kip || "",
+      startDate: row.start_date || "",
+      endDate: row.end_date || "",
+      reason: row.reason || "",
+      phone: row.phone || "",
+      location: row.location || "",
+      status: row.status || "",
+      createdAt: row.created_at || "",
+      leaveYear: row.leave_year || "",
+      hasLeavePermit: row.has_leave_permit === true,
+      distanceKm: row.distance_km,
+      travelDays: Number(row.travel_days || 0),
+      leaveDays: Number(row.leave_days || 0),
+      allocations: row.allocations || []
+    }));
 
     res.json(leaveRequests);
   } catch (error: any) {
-    console.error("Error fetching leave requests:", error);
-    if (await handleAuthErrorIfAny(error, res)) return;
+    console.error("Error fetching leave requests from SQL:", error);
     res.status(500).json({ error: "Failed to fetch leave requests", details: error.message });
   }
 });
 
 app.post("/api/sheets/leave-requests", async (req, res) => {
-  const { name, birthYear, chucDanh, kip, startDate, endDate, reason, phone, location, leaveBalance, workshopId } = req.body;
-  
+  const { name, birthYear, chucDanh, kip, startDate, endDate, reason, phone, location, leaveBalance, leaveYear, hasLeavePermit, workshopId } = req.body;
+
   if (!name || !chucDanh || !kip || !startDate || !endDate) {
     return res.status(400).json({ error: "Thiếu thông tin bắt buộc" });
+  }
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
   }
 
   const normalizedChucDanh = chucDanh === "Trực phụ cơ MR" ? "Trực phụ máy MR" : chucDanh;
   const id = "LEAVE_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
   const dateStr = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-  const status = req.body.status || "Chờ phân ca";
+  const status = "Chờ phân ca";
+  const finalHasLeavePermit = hasLeavePermit === true || hasLeavePermit === "true";
+
+  // The leave year is derived from the rota and the carry-over rule, not taken from the client.
+  const plan = await planLeaveRequest({
+    name,
+    workshopId,
+    kip,
+    startDate,
+    endDate,
+    location: location || "Gia Lai",
+    hasLeavePermit: finalHasLeavePermit
+  });
+  const travel = plan.travel;
+  const finalLeaveYear = plan.leaveYear;
 
   // Try to get leave balance if not supplied in the request body
   let finalLeaveBalance = leaveBalance;
   if (!finalLeaveBalance) {
-    finalLeaveBalance = await fetchLeaveBalanceHelper(name, req.body.googleSheetUrl || req.body.spreadsheetId);
+    finalLeaveBalance = await fetchLeaveBalanceHelper(name, workshopId, finalLeaveYear);
   }
 
-  // ALWAYS send Zalo Notification first (unblocked by Google Sheets state)
-  sendZaloNotification({
+  // Kick off both notification channels now, in parallel with the DB write below, so the
+  // save isn't delayed by network calls — but keep the promises (instead of the old
+  // fire-and-forget) so the response can report what actually happened, awaited right
+  // before the response is built rather than here.
+  const notifyPayload = {
     name,
     chucDanh: normalizedChucDanh,
     kip: String(kip),
@@ -2336,516 +1864,159 @@ app.post("/api/sheets/leave-requests", async (req, res) => {
     location,
     dateStr,
     leaveBalance: finalLeaveBalance
-  });
+  };
+  const zaloPromise = sendZaloNotification(workshopId, notifyPayload);
+  const emailPromise = sendEmailNotification(workshopId, notifyPayload);
 
-  const oauth2Client = getOAuth2Client();
-  let tokens = null;
-  const tokensStr = req.cookies.google_tokens;
-  if (tokensStr) {
-    try { tokens = JSON.parse(tokensStr); } catch (e) {}
-  }
-  if (!tokens) tokens = await loadTokens();
-
-  // If Google Sheets is not authorized, save to localStore and Firestore pending_leaves
-  if (!tokens) {
-    const leaveItem = {
-      id,
-      name,
-      birthYear: birthYear || "",
-      chucDanh: normalizedChucDanh,
-      kip,
-      startDate,
-      endDate,
-      reason: reason || "Giải quyết việc riêng gia đình",
-      phone: phone || "",
-      location: location || "Gia Lai",
-      status,
-      dateStr,
-      workshopId: workshopId || "",
-      createdAt: new Date().toISOString()
-    };
-
-    const pIdx = localStore.pendingLeaves.findIndex(p => p.id === id);
-    if (pIdx >= 0) localStore.pendingLeaves[pIdx] = leaveItem;
-    else localStore.pendingLeaves.push(leaveItem);
-    persistLocalStore();
-
-    try {
-      const db = getFirestoreInstance();
-      await db.collection("pending_leaves").doc(id).set(leaveItem);
-    } catch (dbErr: any) {
-      console.warn("Firestore save pending leave notice (saved in localStore fallback):", dbErr.message);
-    }
-
-    return res.json({ 
-      success: true, 
-      message: `✅ Đã lưu đơn của đồng chí ${name} lên hệ thống và gửi thông báo Zalo thành công! (Sẽ tự động đồng bộ lên Google Sheets sau)`,
-      id,
-      status
-    });
-  }
-
-  oauth2Client.setCredentials(tokens);
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const spreadsheetId = resolveSpreadsheetId(req);
-  ensureAnnualLeaveSheetExists(sheets, spreadsheetId, localStore.appSettings?.staffData).catch(() => {});
-
+  const client = await sqlPool.connect();
   try {
-    // Attempt auto-sync of any previous pending leaves first
-    await syncPendingLeavesToSheets(sheets, spreadsheetId);
-
-    const sheetTitle = await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId, workshopId);
-    
-    const rowValue = [
-      id,
-      name,
-      birthYear || "",
-      normalizedChucDanh,
-      String(kip),
-      startDate,
-      endDate,
-      reason || "Giải quyết việc riêng gia đình",
-      phone || "",
-      location || "Gia Lai",
-      status,
-      dateStr,
-      workshopId || ""
-    ];
-
-    await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range: `'${sheetTitle}'!A:M`,
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [rowValue]
-      }
-    });
-
-    res.json({ 
-      success: true, 
-      message: `✅ Đã lưu đơn của đồng chí ${name} lên Google Sheets và gửi thông báo Zalo thành công!`,
-      id, 
-      status 
-    });
-  } catch (error: any) {
-    console.error("Error saving leave request to Sheets, saving to Firestore as fallback:", error);
-    
-    // Save to Firestore so it is not lost, and we can retry later
-    try {
-      const db = getFirestoreInstance();
-      await db.collection("pending_leaves").doc(id).set({
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO leave_requests (id, name, birth_year, chuc_danh, kip, start_date, end_date, reason, phone, location, status, created_at, leave_year, has_leave_permit, distance_km, travel_days, leave_days, workshop_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+      [
+        id,
         name,
-        birthYear: birthYear || "",
-        chucDanh: normalizedChucDanh,
-        kip,
+        birthYear || "",
+        normalizedChucDanh,
+        String(kip),
         startDate,
         endDate,
-        reason: reason || "Giải quyết việc riêng gia đình",
-        phone: phone || "",
-        location: location || "Gia Lai",
+        reason || "Giải quyết việc riêng gia đình",
+        phone || "",
+        location || "Gia Lai",
         status,
         dateStr,
-        workshopId: workshopId || "",
-        createdAt: new Date().toISOString()
-      });
-      
-      res.json({ 
-        success: true, 
-        message: `✅ Đã gửi thông báo Zalo & lưu đơn của đồng chí ${name} thành công! (Do Google Sheets đang gián đoạn, đơn đã được lưu tạm trên hệ thống).`,
-        id,
-        status
-      });
-    } catch (dbErr: any) {
-      res.status(500).json({ error: "Lưu đơn thất bại", details: error.message });
+        finalLeaveYear,
+        finalHasLeavePermit,
+        travel.distanceKm,
+        travel.travelDays,
+        plan.leaveDays,
+        workshopId
+      ]
+    );
+
+    for (const [year, days] of Object.entries(plan.allocations)) {
+      await client.query(
+        `INSERT INTO leave_allocations (leave_id, leave_year, days) VALUES ($1,$2,$3)`,
+        [id, year, days]
+      );
     }
+    await client.query("COMMIT");
+
+    const [zaloResult, emailResult] = await Promise.all([zaloPromise, emailPromise]);
+    // Only the email outcome is surfaced, per the wording asked for. The Zalo result and
+    // the leave-day breakdown still travel in the JSON below (notify / allocations), so
+    // nothing is lost for callers that need them — they are just kept out of the banner.
+    let notifyMsg: string;
+    if (emailResult.ok) notifyMsg = " Đã gửi đơn nghỉ phép tới gmail TKPX.";
+    else if (emailResult.skipped) notifyMsg = " Chưa cấu hình gmail TKPX nên chưa gửi được đơn.";
+    else notifyMsg = " Gửi đơn nghỉ phép tới gmail TKPX thất bại.";
+
+    res.json({
+      success: true,
+      message: `✅ Đã lưu đơn của đồng chí ${name}!${notifyMsg}`,
+      id,
+      status,
+      leaveDays: plan.leaveDays,
+      leaveYear: finalLeaveYear,
+      allocations: plan.allocations,
+      travelDays: travel.travelDays,
+      distanceKm: travel.distanceKm,
+      travelNote: travel.note,
+      notify: {
+        zalo: zaloResult,
+        email: emailResult
+      }
+    });
+  } catch (error: any) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Error saving leave request to SQL:", error);
+    res.status(500).json({ error: "Lưu đơn thất bại", details: error.message });
+  } finally {
+    client.release();
   }
 });
 
 app.get("/api/sheets/leave-balance", async (req, res) => {
-  const { name } = req.query;
+  const { name, year, workshopId } = req.query;
   if (!name) {
     return res.status(400).json({ error: "Thiếu tên nhân viên" });
   }
-
-  const targetName = String(name).trim();
-  const targetNormalized = removeVietnameseAccents(targetName);
-  const spreadsheetId = resolveSpreadsheetId(req);
-
-  const fallbackToLocalStaffData = () => {
-    let staffData: string[][] = localStore.appSettings?.staffData || [];
-    if (staffData.length === 0) {
-      staffData = DEFAULT_WORKSHOPS[0]?.staffData || [];
-    }
-    
-    for (const row of staffData) {
-      if (!Array.isArray(row)) continue;
-      for (let colIdx = 1; colIdx < row.length; colIdx++) {
-        const pName = (row[colIdx] || '').trim();
-        if (pName && (pName.toLowerCase() === targetName.toLowerCase() || removeVietnameseAccents(pName) === targetNormalized)) {
-          return {
-            success: true,
-            entitled: "12",
-            used: "0",
-            remaining: "12",
-            source: "default"
-          };
-        }
-      }
-    }
-    return null;
-  };
-
-  const oauth2Client = getOAuth2Client();
-  let tokens = null;
-  const tokensStr = req.cookies.google_tokens;
-  if (tokensStr) {
-    try { tokens = JSON.parse(tokensStr); } catch (e) {}
-  }
-  if (!tokens) tokens = await loadTokens();
-
-  if (!tokens) {
-    const localMatch = fallbackToLocalStaffData();
-    if (localMatch) return res.json(localMatch);
-    return res.status(401).json({ error: "Chưa kết nối Google Sheets. Vui lòng kết nối trước." });
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
   }
 
-  oauth2Client.setCredentials(tokens);
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-
+  const targetYear = String(year || new Date().getFullYear());
   try {
-    let targetSheetName = "Số ngày phép";
-    try {
-      const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-      const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
-      targetSheetName = sheetNames.find(n => n?.toLowerCase().trim() === "số ngày phép") || sheetNames[0] || "Số ngày phép";
-    } catch (e) {}
-
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `'${targetSheetName}'!A1:H1000`
-    });
-
-    const rows = response.data.values;
-    if (!rows || rows.length === 0) {
-      const localMatch = fallbackToLocalStaffData();
-      if (localMatch) return res.json(localMatch);
-      return res.status(404).json({ error: "Không tìm thấy dữ liệu trong bảng tính" });
+    const quotas = await getQuotaByYear(String(name), String(workshopId), undefined, [targetYear]);
+    const years = Object.keys(quotas).sort();
+    const current = quotas[targetYear];
+    if (!current || (current.entitled === 0 && current.source !== "manual")) {
+      return res.status(404).json({ error: `Chưa khai báo số ngày phép năm của đồng chí ${name}` });
     }
-
-    let matchedRow: any[] | null = null;
-    
-    for (const row of rows) {
-      if (!row || row.length === 0) continue;
-      for (let colIdx = 0; colIdx < Math.min(row.length, 4); colIdx++) {
-        const cellVal = String(row[colIdx] || '').trim().toLowerCase();
-        if (cellVal === targetName.toLowerCase()) {
-          matchedRow = row;
-          break;
-        }
-      }
-      if (matchedRow) break;
-    }
-
-    if (!matchedRow) {
-      for (const row of rows) {
-        if (!row || row.length === 0) continue;
-        for (let colIdx = 0; colIdx < Math.min(row.length, 4); colIdx++) {
-          const cellVal = String(row[colIdx] || '').trim();
-          if (removeVietnameseAccents(cellVal) === targetNormalized) {
-            matchedRow = row;
-            break;
-          }
-        }
-        if (matchedRow) break;
-      }
-    }
-
-    if (!matchedRow) {
-      const localMatch = fallbackToLocalStaffData();
-      if (localMatch) return res.json(localMatch);
-      return res.status(404).json({ error: `Không tìm thấy thông tin phép năm của đồng chí ${targetName}` });
-    }
-
-    const headerRow = rows[0] || [];
-    let oldLeavesCol = 4; // Column E
-    let newLeavesCol = 5; // Column F (Phép năm mới được hưởng)
-    let usedCol = 6;      // Column G (Phép đã nghỉ năm)
-    let remainingCol = 7; // Column H (Phép còn lại hiện tại)
-
-    for (let c = 0; c < headerRow.length; c++) {
-      const hText = removeVietnameseAccents(String(headerRow[c] || '')).toLowerCase();
-      if (hText.includes("nam cu") || hText.includes("phep nam cu")) {
-        oldLeavesCol = c;
-      } else if (hText.includes("nam moi") || hText.includes("duoc huong") || hText.includes("dinh muc")) {
-        newLeavesCol = c;
-      } else if (hText.includes("da nghi")) {
-        usedCol = c;
-      } else if (hText.includes("con lai")) {
-        remainingCol = c;
-      }
-    }
-
-    const oldLeaves = parseFloat(String(matchedRow[oldLeavesCol] || '0').trim()) || 0;
-    const newLeaves = parseFloat(String(matchedRow[newLeavesCol] || '12').trim()) || 12;
-    const usedVal = parseFloat(String(matchedRow[usedCol] || '0').trim()) || 0;
-
-    const calc = calculateLeaveBalanceLogic(oldLeaves, newLeaves, usedVal);
-
-    const entitled = String(calc.entitled);
-    const used = String(calc.usedLeaves);
-    const remaining = (matchedRow[remainingCol] !== undefined && String(matchedRow[remainingCol]).trim() !== '')
-      ? String(matchedRow[remainingCol]).trim()
-      : String(calc.remaining);
 
     return res.json({
       success: true,
-      name: targetName,
-      entitled,
-      used,
-      remaining,
-      note: calc.note,
-      oldLeaves: String(calc.oldLeaves),
-      newLeaves: String(calc.newLeaves)
-    });
-
-  } catch (error: any) {
-    console.error("Error fetching leave balance:", error);
-    const localMatch = fallbackToLocalStaffData();
-    if (localMatch) return res.json(localMatch);
-    return res.status(500).json({ error: "Lỗi kết nối hoặc không thể lấy dữ liệu", details: error.message });
-  }
-});
-
-app.post("/api/sheets/sync-staff-leaves", async (req, res) => {
-  const { staffData } = req.body;
-  const spreadsheetId = resolveSpreadsheetId(req);
-
-  const oauth2Client = getOAuth2Client();
-  let tokens = null;
-  const tokensStr = req.cookies.google_tokens;
-  if (tokensStr) {
-    try { tokens = JSON.parse(tokensStr); } catch (e) {}
-  }
-  if (!tokens) tokens = await loadTokens();
-
-  if (!tokens) {
-    return res.status(401).json({ error: "Chưa kết nối Google Sheets. Vui lòng kết nối tài khoản Google trước." });
-  }
-
-  oauth2Client.setCredentials(tokens);
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-
-  try {
-    const actualData = staffData || localStore.appSettings?.staffData || [];
-    const sheetName = await ensureAnnualLeaveSheetExists(sheets, spreadsheetId, actualData);
-    res.json({
-      success: true,
-      message: `✅ Đã khởi tạo và đồng bộ thành công danh sách nhân sự sang sheet '${sheetName}' trên Google Sheets!`,
-      spreadsheetId
+      name,
+      year: current.year,
+      entitled: String(current.entitled + current.travelDays),
+      used: String(current.used),
+      remaining: String(current.remaining),
+      byYear: years.map(y => quotas[y])
     });
   } catch (error: any) {
-    console.error("Error in sync-staff-leaves:", error);
-    if (await handleAuthErrorIfAny(error, res)) return;
-    res.status(500).json({ error: "Không thể đồng bộ danh sách nhân sự sang Google Sheets", details: error.message });
+    console.error("Error fetching leave balance from SQL:", error);
+    return res.status(500).json({ error: "Lỗi truy vấn dữ liệu", details: error.message });
   }
 });
 
 app.post("/api/sheets/leave-requests/update-status", async (req, res) => {
   const { ids, status, workshopId } = req.body;
-  
+
   if (!ids || !Array.isArray(ids) || ids.length === 0 || !status) {
     return res.status(400).json({ error: "Tham số không hợp lệ." });
   }
-
-  // Always update in localStore.pendingLeaves
-  if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
-    localStore.pendingLeaves.forEach((p: any) => {
-      if (ids.includes(p.id)) p.status = status;
-    });
-    persistLocalStore();
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
   }
-
-  // Always update in Firestore
-  try {
-    const db = getFirestoreInstance();
-    const batch = db.batch();
-    ids.forEach((id: string) => {
-      batch.set(db.collection("pending_leaves").doc(id), { status }, { merge: true });
-    });
-    await batch.commit();
-  } catch (e) {}
-
-  const oauth2Client = getOAuth2Client();
-  let tokens = null;
-  const tokensStr = req.cookies.google_tokens;
-  if (tokensStr) {
-    try { tokens = JSON.parse(tokensStr); } catch (e) {}
-  }
-  if (!tokens) tokens = await loadTokens();
-  
-  if (!tokens) {
-    return res.json({ success: true, message: "Đã cập nhật trạng thái đơn trên hệ thống nội bộ!" });
-  }
-
-  oauth2Client.setCredentials(tokens);
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const spreadsheetId = resolveSpreadsheetId(req);
 
   try {
-    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-    const allSheetObjects = spreadsheet.data.sheets || [];
-    const allSheetTitles = allSheetObjects.map((s: any) => s.properties?.title || "");
+    const result = await sqlPool.query(
+      `UPDATE leave_requests SET status = $1 WHERE workshop_id = $2 AND id = ANY($3::text[]) RETURNING id`,
+      [status, workshopId, ids]
+    );
 
-    let sheetsToSearch = allSheetTitles.filter(t => t.toLowerCase().startsWith("danh_sach_nghi"));
-    if (sheetsToSearch.length === 0) {
-      const defaultTitle = await getOrEnsureLeaveSheetTitle(sheets, spreadsheetId, workshopId);
-      sheetsToSearch = [defaultTitle];
-    }
-
-    const updatedRows = [];
-    for (const sheetTitle of sheetsToSearch) {
-      try {
-        const response = await sheets.spreadsheets.values.get({
-          spreadsheetId,
-          range: `'${sheetTitle}'!A1:M2000`
-        });
-        
-        const rows = response.data.values;
-        if (!rows || rows.length <= 1) continue;
-
-        for (let i = 1; i < rows.length; i++) {
-          const row = rows[i];
-          if (!row || !row[0]) continue;
-          
-          const itemId = row[0];
-          if (ids.includes(itemId)) {
-            const rowNum = i + 1;
-            await sheets.spreadsheets.values.update({
-              spreadsheetId,
-              range: `'${sheetTitle}'!K${rowNum}`,
-              valueInputOption: "RAW",
-              requestBody: {
-                values: [[status]]
-              }
-            });
-            updatedRows.push({ id: itemId, rowNum, sheetTitle });
-          }
-        }
-      } catch (sheetErr: any) {
-        console.error(`Error updating status on sheet ${sheetTitle}:`, sheetErr.message);
-      }
-    }
-
-    res.json({ success: true, updatedCount: updatedRows.length, updatedRows });
+    res.json({ success: true, updatedCount: result.rowCount, updatedRows: result.rows });
   } catch (error: any) {
-    console.error("Error updating status:", error);
-    if (await handleAuthErrorIfAny(error, res)) return;
+    console.error("Error updating leave status in SQL:", error);
     res.status(500).json({ error: "Failed to update leave status", details: error.message });
   }
 });
 
 app.post("/api/sheets/leave-requests/delete", async (req, res) => {
-  const { ids } = req.body;
+  const { ids, workshopId } = req.body;
   if (!ids || !Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ error: "Tham số không hợp lệ." });
   }
-
-  // Always delete from localStore.pendingLeaves
-  if (localStore.pendingLeaves && Array.isArray(localStore.pendingLeaves)) {
-    localStore.pendingLeaves = localStore.pendingLeaves.filter((p: any) => !ids.includes(p.id));
-    persistLocalStore();
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
   }
-
-  // Always delete from Firestore
-  try {
-    const db = getFirestoreInstance();
-    const batch = db.batch();
-    ids.forEach((id: string) => {
-      batch.delete(db.collection("pending_leaves").doc(id));
-    });
-    await batch.commit();
-  } catch (e) {}
-
-  const oauth2Client = getOAuth2Client();
-  let tokens = null;
-  const tokensStr = req.cookies.google_tokens;
-  if (tokensStr) {
-    try { tokens = JSON.parse(tokensStr); } catch (e) {}
-  }
-  if (!tokens) tokens = await loadTokens();
-  
-  if (!tokens) {
-    return res.json({ success: true, message: "Đã xóa đơn khỏi hệ thống nội bộ!" });
-  }
-
-  oauth2Client.setCredentials(tokens);
-  const sheets = google.sheets({ version: "v4", auth: oauth2Client });
-  const spreadsheetId = resolveSpreadsheetId(req);
 
   try {
-    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-    const allSheetObjects = spreadsheet.data.sheets || [];
-    const normalizedTargetIds = ids.map(id => String(id).trim().toLowerCase());
+    const normalizedTargetIds = ids.map((id: any) => String(id).trim());
+    const result = await sqlPool.query(
+      `DELETE FROM leave_requests WHERE workshop_id = $1 AND id = ANY($2::text[])`,
+      [workshopId, normalizedTargetIds]
+    );
 
-    let deletedCount = 0;
-
-    for (const sheetObj of allSheetObjects) {
-      const sheetTitle = sheetObj.properties?.title || "";
-      if (!sheetTitle.toLowerCase().startsWith("danh_sach_nghi")) continue;
-
-      const sheetId = sheetObj.properties?.sheetId;
-      if (sheetId === undefined || sheetId === null) continue;
-
-      try {
-        const response = await sheets.spreadsheets.values.get({
-          spreadsheetId,
-          range: `'${sheetTitle}'!A1:M2000`
-        });
-        
-        const rows = response.data.values;
-        if (!rows || rows.length <= 1) continue;
-
-        const rowsToDelete: number[] = [];
-
-        for (let i = 1; i < rows.length; i++) {
-          const row = rows[i];
-          if (!row || !row[0]) continue;
-          
-          const itemId = String(row[0]).trim().toLowerCase();
-          if (normalizedTargetIds.includes(itemId)) {
-            rowsToDelete.push(i + 1);
-          }
-        }
-
-        if (rowsToDelete.length > 0) {
-          rowsToDelete.sort((a, b) => b - a);
-          const requests = rowsToDelete.map(rowNum => ({
-            deleteDimension: {
-              range: {
-                sheetId: Number(sheetId),
-                dimension: "ROWS",
-                startIndex: Number(rowNum - 1),
-                endIndex: Number(rowNum)
-              }
-            }
-          }));
-
-          await sheets.spreadsheets.batchUpdate({
-            spreadsheetId,
-            requestBody: { requests }
-          });
-
-          deletedCount += rowsToDelete.length;
-        }
-      } catch (sheetErr: any) {
-        console.error(`Error deleting rows from sheet ${sheetTitle}:`, sheetErr.message);
-      }
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Không tìm thấy mã đơn cần xóa trong cơ sở dữ liệu." });
     }
 
-    res.json({ success: true, deletedCount });
+    res.json({ success: true, deletedCount: result.rowCount });
   } catch (error: any) {
-    console.error("Error deleting leave request:", error);
-    if (await handleAuthErrorIfAny(error, res)) return;
+    console.error("Error deleting leave request from SQL:", error);
     res.status(500).json({ error: "Failed to delete leave request", details: error.message });
   }
 });
@@ -2873,7 +2044,7 @@ app.post("/api/sheets/update", async (req, res) => {
 
   // Listen for token refreshes and save them
   oauth2Client.on('tokens', (newTokens) => {
-    console.log("Tokens refreshed, saving to Firestore...");
+    console.log("Tokens refreshed, saving to database...");
     saveTokens(newTokens);
   });
 
@@ -3096,10 +2267,7 @@ app.post("/api/sheets/update", async (req, res) => {
     if (isAuthError) {
       console.warn("Auth error detected. Clearing tokens and requesting re-auth.");
       res.clearCookie("google_tokens");
-      try {
-        const db = getFirestoreInstance();
-        await db.collection("config").doc("google_auth").delete();
-      } catch (e) {}
+      await clearTokens();
       return res.status(401).json({ 
         error: "Google Authentication expired or has insufficient permissions. Please log in again.",
         details: error.message 
@@ -3136,7 +2304,7 @@ app.post("/api/sheets/update-annual-leaves", async (req, res) => {
   oauth2Client.setCredentials(tokens);
 
   oauth2Client.on('tokens', (newTokens) => {
-    console.log("Tokens refreshed, saving to Firestore...");
+    console.log("Tokens refreshed, saving to database...");
     saveTokens(newTokens);
   });
 
@@ -3246,17 +2414,11 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
     });
   }
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
 }
 
 startServer();

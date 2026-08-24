@@ -7,30 +7,70 @@
 }
 
 :root {
-  --bg: #edf4f1;
-  --bg-gradient: linear-gradient(135deg, #e2ede8 0%, #edf4f1 50%, #e4eeea 100%);
-  --surf: rgba(255, 255, 255, 0.92);
-  --surf2: #f3f8f6;
-  --brd: rgba(13, 148, 136, 0.1);
-  --brd-hover: rgba(13, 148, 136, 0.22);
-  --acc: #0d9488;
-  --acc-light: rgba(13, 148, 136, 0.08);
-  --acc-glow: rgba(13, 148, 136, 0.18);
-  --acc2: #059669;
-  --acc3: #dc2626;
-  --acc-purple: #6366f1;
-  --txt: #0a2d23;
-  --txt2: #48695f;
-  --N: #059669;
-  --C: #ca8a04;
-  --K: #2563eb;
+  /* ── Colour ──────────────────────────────────────────────
+     One family, not two. The header/logo already carried EVN's institutional blue
+     while everything else used an unrelated teal; the clash is what read as
+     unfinished. Blue is now the single accent and the page sits on a neutral grey
+     instead of a green-tinted one, so the brand colour is the only hue competing
+     for attention. */
+  --acc: #00529c;
+  --acc-strong: #053d6c;
+  --acc-light: rgba(0, 82, 156, 0.07);
+  --acc-glow: rgba(0, 82, 156, 0.16);
+  --acc2: #047857;
+  --acc3: #b91c1c;
+  --acc-purple: #4f46e5;
 
-  /* Refined shadows */
-  --shadow-sm: 0 2px 8px rgba(10, 45, 35, 0.04);
-  --shadow-md: 0 6px 20px rgba(10, 45, 35, 0.07);
-  --shadow-lg: 0 12px 36px rgba(10, 45, 35, 0.08);
-  --shadow-focus: 0 0 0 3px rgba(13, 148, 136, 0.18);
-  --shadow-glow: 0 0 24px rgba(13, 148, 136, 0.08);
+  --bg: #f1f4f8;
+  --bg-gradient: linear-gradient(180deg, #f4f7fa 0%, #eef2f7 100%);
+  --surf: rgba(255, 255, 255, 0.96);
+  --surf2: #f6f8fb;
+  --brd: rgba(15, 23, 42, 0.09);
+  --brd-hover: rgba(0, 82, 156, 0.30);
+
+  --txt: #0f172a;
+  --txt2: #64748b;
+
+  /* Shift codes stay semantic — these carry meaning, not decoration. */
+  --N: #047857;
+  --C: #b45309;
+  --K: #1d4ed8;
+
+  /* ── Type scale ──────────────────────────────────────────
+     Five steps. Previously eight sizes were in play (9 / 9.5 / 10 / 10.5 / 11 /
+     12 / 12.5 / 13 / 13.5 / 14 / 15 / 16 / 17 / 18 / 20px); neighbouring values
+     that differ by half a pixel read as a mistake rather than a hierarchy. */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 19px;
+
+  /* ── Radius ──────────────────────────────────────────────
+     Three steps plus a pill. Eight different corner radii were in use. */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+  --r-full: 999px;
+
+  /* ── Spacing ─────────────────────────────────────────────
+     A 4px rhythm, so gaps line up instead of being eyeballed per component. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* ── Elevation ───────────────────────────────────────────
+     Two real levels and a focus ring. Five overlapping shadows had no hierarchy:
+     everything floated, so nothing stood out. */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 2px 4px rgba(15, 23, 42, 0.04), 0 6px 16px rgba(15, 23, 42, 0.07);
+  --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.10);
+  --shadow-focus: 0 0 0 3px rgba(0, 82, 156, 0.16);
+  --shadow-glow: 0 0 24px rgba(0, 82, 156, 0.07);
 }
 
 /* ─── RESET & BASE ─────────────────────────────────────── */
@@ -42,7 +82,7 @@
 }
 
 body {
-  background-color: #f1f6f4;
+  background-color: var(--bg);
   background-image: var(--bg-gradient);
   color: var(--txt);
   font-family: 'Be Vietnam Pro', sans-serif;
@@ -106,20 +146,20 @@ header::before {
   width: 56px;
   height: 3px;
   background: linear-gradient(90deg, var(--acc), var(--acc-purple));
-  border-radius: 3px;
+  border-radius: 6px;
   margin: 0 auto 20px;
 }
 
 .tag {
   display: inline-block;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 4px;
   text-transform: uppercase;
   color: var(--acc);
   border: 1px solid rgba(13, 148, 136, 0.28);
   padding: 5px 18px;
-  border-radius: 30px;
+  border-radius: 999px;
   margin-bottom: 22px;
   background: rgba(13, 148, 136, 0.06);
   backdrop-filter: blur(6px);
@@ -132,7 +172,7 @@ header::before {
 }
 
 h1 {
-  font-size: clamp(28px, 6vw, 44px);
+  font-size: clamp(26px, 6vw, 42px);
   font-weight: 900;
   background: linear-gradient(135deg, #0a2d23 25%, #0d9488 60%, #6366f1 100%);
   -webkit-background-clip: text;
@@ -145,7 +185,7 @@ h1 {
 
 .sub {
   color: var(--txt2);
-  font-size: 16.5px;
+  font-size: 15px;
   font-weight: 500;
   max-width: 580px;
   margin: 0 auto;
@@ -194,10 +234,10 @@ h1 {
 }
 
 .ctitle {
-  font-size: 14px;
+  font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 2px;
+  letter-spacing: 2.5px;
   color: var(--acc);
   margin-bottom: 24px;
   display: flex;
@@ -207,10 +247,10 @@ h1 {
 
 .ctitle::before {
   content: '';
-  width: 4px;
-  height: 18px;
+  width: 3px;
+  height: 16px;
   background: linear-gradient(180deg, var(--acc), var(--acc-purple));
-  border-radius: 3px;
+  border-radius: 6px;
   box-shadow: 0 0 8px var(--acc-glow);
   flex-shrink: 0;
 }
@@ -230,11 +270,11 @@ h1 {
 }
 
 label {
-  font-size: 12.5px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--txt2);
   text-transform: uppercase;
-  letter-spacing: 1.2px;
+  letter-spacing: 1.5px;
   transition: color 0.2s;
 }
 
@@ -249,10 +289,10 @@ select {
   background: var(--surf2);
   border: 1px solid var(--brd);
   border-radius: 10px;
-  padding: 12px 16px;
+  padding: 11px 15px;
   color: var(--txt);
   font-family: inherit;
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 500;
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
@@ -270,6 +310,52 @@ select:focus {
   border-color: var(--acc);
   box-shadow: var(--shadow-focus);
   background: #ffffff;
+}
+
+/* The shared `input` rule above sets appearance:none plus a pill radius and padding,
+   which erases a checkbox entirely: ticking one changed nothing on screen. Restore a
+   real box here and draw the tick ourselves, since appearance:none means the browser
+   no longer supplies one. */
+input[type=checkbox] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  flex: 0 0 18px;
+  border: 2px solid var(--brd);
+  border-radius: 6px;
+  background: #ffffff;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+input[type=checkbox]:hover {
+  border-color: var(--acc);
+}
+
+input[type=checkbox]:checked {
+  background: var(--acc);
+  border-color: var(--acc);
+}
+
+/* The tick itself: two borders of a rotated box form the check shape. */
+input[type=checkbox]:checked::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 4px;
+  height: 9px;
+  border: solid #ffffff;
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg);
+}
+
+input[type=checkbox]:focus-visible {
+  box-shadow: var(--shadow-focus);
 }
 
 input[type=date]::-webkit-calendar-picker-indicator {
@@ -292,11 +378,11 @@ input[type=date]::-webkit-calendar-picker-indicator:hover {
 }
 
 .hint {
-  font-size: 12.5px;
+  font-size: 11px;
   color: var(--txt2);
   margin-top: 3px;
   font-style: italic;
-  opacity: 0.85;
+  opacity: 0.75;
   line-height: 1.5;
 }
 
@@ -311,7 +397,7 @@ input[type=date]::-webkit-calendar-picker-indicator:hover {
   border-radius: 10px;
   font-family: inherit;
   font-weight: 700;
-  font-size: 15px;
+  font-size: 13px;
   cursor: pointer;
   border: none;
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
@@ -365,8 +451,8 @@ input[type=date]::-webkit-calendar-picker-indicator:hover {
   background: rgba(255, 255, 255, 0.85);
   border: 1px solid rgba(13, 148, 136, 0.15);
   border-radius: 10px;
-  padding: 10px 20px;
-  font-size: 14px;
+  padding: 9px 18px;
+  font-size: 12px;
   font-family: inherit;
   font-weight: 700;
   cursor: pointer;
@@ -469,16 +555,16 @@ input[type=date]::-webkit-calendar-picker-indicator:hover {
 /* ─── STAFF TOGGLE ────────────────────────────────────── */
 
 .staff-toggle {
-  font-size: 13.5px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--acc);
   cursor: pointer;
   background: rgba(13, 148, 136, 0.06);
   border: 1px solid rgba(13, 148, 136, 0.2);
-  border-radius: 20px;
+  border-radius: 18px;
   font-family: inherit;
   margin-left: 12px;
-  padding: 5px 16px;
+  padding: 4px 14px;
   transition: all 0.2s;
   text-decoration: none;
 }
@@ -503,12 +589,12 @@ input[type=date]::-webkit-calendar-picker-indicator:hover {
 table.st {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 12px;
 }
 
 table.st th,
 table.st td {
-  padding: 12px 16px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--brd);
   text-align: center;
   white-space: nowrap;
@@ -517,7 +603,7 @@ table.st td {
 table.st th {
   background: var(--surf2);
   font-weight: 800;
-  font-size: 12.5px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: var(--acc);
@@ -529,17 +615,17 @@ table.st td:first-child {
   text-align: left;
   font-weight: 700;
   color: var(--txt);
-  font-size: 14px;
+  font-size: 12px;
   background: rgba(13, 148, 136, 0.025);
 }
 
 table.st td input {
   background: rgba(255, 255, 255, 0.9);
   border: 1px solid rgba(13, 148, 136, 0.12);
-  border-radius: 7px;
-  padding: 6px 10px;
-  width: 140px;
-  font-size: 14px;
+  border-radius: 10px;
+  padding: 4px 8px;
+  width: 130px;
+  font-size: 12px;
   text-align: center;
   color: var(--txt);
   font-family: inherit;
@@ -557,9 +643,9 @@ table.st td input:focus {
 /* ─── ALERTS ──────────────────────────────────────────── */
 
 .alert {
-  padding: 14px 20px;
-  border-radius: 12px;
-  font-size: 15px;
+  padding: 13px 18px;
+  border-radius: 14px;
+  font-size: 13px;
   margin-bottom: 18px;
   display: flex;
   align-items: flex-start;
@@ -592,7 +678,7 @@ table.st td input:focus {
 
 .iitem {
   background: var(--surf);
-  border-radius: 13px;
+  border-radius: 14px;
   padding: 16px 18px;
   border: 1px solid var(--brd);
   box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255,255,255,0.5);
@@ -624,7 +710,7 @@ table.st td input:focus {
 }
 
 .ilbl {
-  font-size: 11.5px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: var(--txt2);
@@ -634,7 +720,7 @@ table.st td input:focus {
 
 .ival {
   font-weight: 800;
-  font-size: 18px;
+  font-size: 19px;
   color: var(--txt);
   line-height: 1.2;
 }
@@ -652,14 +738,14 @@ table.st td input:focus {
 table.rt {
   width: 100%;
   border-collapse: collapse;
-  font-size: 15px;
+  font-size: 13px;
 }
 
 table.rt th {
   background: var(--surf2);
-  padding: 14px 20px;
+  padding: 13px 18px;
   font-weight: 800;
-  font-size: 12.5px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: var(--acc);
@@ -671,7 +757,7 @@ table.rt th {
 }
 
 table.rt td {
-  padding: 12px 20px;
+  padding: 11px 18px;
   border-bottom: 1px solid rgba(13, 148, 136, 0.05);
   vertical-align: middle;
   transition: background 0.15s;
@@ -690,10 +776,10 @@ table.rt tr:hover td {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 4px 13px;
-  border-radius: 30px;
+  padding: 3px 11px;
+  border-radius: 999px;
   font-weight: 800;
-  font-size: 12px;
+  font-size: 11px;
   font-family: 'JetBrains Mono', monospace;
   letter-spacing: 0.5px;
 }
@@ -731,7 +817,7 @@ table.rt tr:hover td {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 14px;
+  font-size: 12px;
   color: var(--txt2);
   font-weight: 500;
 }
@@ -790,9 +876,9 @@ table.rt tr:hover td {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 12px;
-  border-radius: 30px;
-  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
   font-weight: 800;
   background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
@@ -802,7 +888,7 @@ table.rt tr:hover td {
 .concurrent-item {
   background: var(--surf2);
   border: 1px solid var(--brd);
-  border-radius: 13px;
+  border-radius: 14px;
   padding: 16px 20px;
   margin-bottom: 12px;
   position: relative;
@@ -859,7 +945,7 @@ tr.date-sep td {
 .modal-content {
   background: var(--surf);
   border: 1px solid var(--brd);
-  border-radius: 20px;
+  border-radius: 18px;
   width: 100%;
   max-width: 1000px;
   max-height: 90vh;
@@ -887,7 +973,7 @@ tr.date-sep td {
 }
 
 .modal-header h3 {
-  font-size: 17px;
+  font-size: 19px;
   font-weight: 800;
   color: var(--txt);
   margin: 0;
@@ -900,7 +986,7 @@ tr.date-sep td {
   color: var(--txt2);
   width: 34px;
   height: 34px;
-  border-radius: 9px;
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -929,7 +1015,7 @@ tr.date-sep td {
   margin: 0 auto;
   min-height: 100%;
   padding: 52px !important;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 .modal-footer {
@@ -958,7 +1044,7 @@ tr.date-sep td {
   font-family: 'Be Vietnam Pro', sans-serif;
   font-weight: 700;
   letter-spacing: 0.4px;
-  font-size: 12.5px;
+  font-size: 12px;
   border-radius: 10px;
   padding: 9px 20px;
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
@@ -988,7 +1074,7 @@ tr.date-sep td {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: rgba(13, 148, 136, 0.2);
-  border-radius: 4px;
+  border-radius: 6px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
@@ -1010,7 +1096,7 @@ tr.date-sep td {
 #dify-chatbot-bubble-window {
   width: 25rem !important;
   height: 42rem !important;
-  border-radius: 20px !important;
+  border-radius: 18px !important;
   box-shadow: 0 24px 64px rgba(10, 45, 35, 0.2) !important;
 }
 
@@ -1020,38 +1106,80 @@ tr.date-sep td {
   background: rgba(13, 148, 136, 0.18);
   color: var(--txt);
 }
-
-/* ─── RESPONSIVE LAYOUT ADJUSTMENTS ───────────────────── */
-
+/* ─── MOBILE (≤640px) ─────────────────────────────────────
+   Phones are the primary way shift staff check the rota, but the desktop
+   layout was the only one that existed. Everything below is layout-only:
+   no colours, no logic, no component structure changes. */
 @media (max-width: 640px) {
+
+  /* Tailwind's col-span-2 spans a second column that no longer exists once
+     .g2 collapses to a single track, which pushed those fields ~56px past
+     the viewport with no way to scroll to them. Make them span the row. */
+  .g2 {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .g2 > .col-span-2,
+  .g2 > [class*="col-span-"] {
+    grid-column: 1 / -1;
+  }
+
+  /* Reclaim the padding the desktop layout can afford and a phone cannot. */
   .wrap {
-    padding: 20px 12px;
+    padding: 18px 14px;
   }
   .card {
     padding: 18px 14px;
-    margin-bottom: 18px;
+    margin-bottom: 16px;
     border-radius: 14px;
   }
-  header {
-    margin-bottom: 28px;
+
+  /* Wide tables keep their nowrap cells but scroll inside their own box
+     instead of being clipped by the card. */
+  .staff-wrap,
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
-  .ctitle {
-    font-size: 13px;
-    margin-bottom: 16px;
-  }
-  .docx-container {
-    padding: 16px !important;
-  }
-  .modal-body {
-    padding: 14px;
-  }
-  .modal-content {
-    max-height: 95vh;
-  }
-  table.st, table.rt {
-    font-size: 12.5px;
-  }
-  table.st th, table.st td, table.rt th, table.rt td {
+  table.st th,
+  table.st td {
     padding: 8px 10px;
+  }
+
+  /* Touch targets: 44px is the smallest reliably tappable size, and any
+     input under 16px makes iOS Safari zoom the whole page on focus. */
+  .btn,
+  button.btn,
+  .field input,
+  .field select,
+  .field textarea,
+  input[type="text"],
+  input[type="number"],
+  input[type="date"],
+  input[type="password"],
+  select,
+  textarea {
+    min-height: 44px;
+    font-size: 19px;
+  }
+
+  /* The nav tabs wrapped onto three lines, eating a third of the screen. */
+  .nav-tabs {
+    scrollbar-width: none;
+  }
+  /* The tab labels are only 26px tall on their own, below the size a thumb
+     can hit reliably; pad the hit area without moving the active underline. */
+  .nav-tabs > button {
+    min-height: 42px;
+    padding-top: 10px;
+  }
+
+  /* Any remaining action button gets a thumb-sized hit area. Icon-only square
+     buttons are excluded so they do not stretch into rectangles. */
+  button:not(.nav-tabs > button):not([class*="rounded-full"]):not([class*="w-8"]):not([class*="w-9"]):not([class*="w-10"]) {
+    min-height: 40px;
+  }
+  .nav-tabs::-webkit-scrollbar {
+    display: none;
   }
 }

@@ -42,14 +42,6 @@ export interface ShiftScheduleConfig {
   rulesMatrix?: Record<number, Record<string, { k: number }>>;
 }
 
-export interface LeaveRuleConfig {
-  maxAbsentPerTeam?: number;
-  maxAbsentPerShift?: number;
-  advanceNoticeDays?: number;
-  allowOverlapSwap?: boolean;
-  leaveRuleNote?: string;
-}
-
 export interface WorkshopConfig {
   companyName?: string;
   headerWorkshopName?: string;
@@ -62,8 +54,8 @@ export interface WorkshopConfig {
   nguoiKy: string;
   chucVuNguoiKy?: string;
   zaloWebhookUrl: string;
+  notifyEmail?: string;
   shiftSchedule?: ShiftScheduleConfig;
-  leaveRules?: LeaveRuleConfig;
 }
 
 export interface Workshop {

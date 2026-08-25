@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Lịch trực thay ca vận hành</title>
+
+    <!-- The heading font is served by this app (see src/index.css) instead of Google.
+         Preloading the weight-900 Vietnamese cut specifically: it draws the company name
+         in the header, and while it is missing the browser falls back to a system face
+         that has no 900 weight, fakes the bold, and smears the hook on Ủ into something
+         that reads as the acute on Ý. crossorigin is required even same-origin, or the
+         preload is fetched a second time. -->
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      href="/fonts/be-vietnam-pro-900-vietnamese.woff2"
+      crossorigin
+    />
   </head>
   <body>
     <div id="root"></div>

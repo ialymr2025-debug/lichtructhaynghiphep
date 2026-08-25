@@ -10,8 +10,8 @@ import http from "http";
 import fs from "fs";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
-import { pool as sqlPool, initLeaveTables, calcTravelDays, calcEntitledDays, calcSeniority } from "./db";
-import { listWorkingShifts, allocateLeaveDays, type ShiftConfig } from "./leaveCalc";
+import { pool as sqlPool, initLeaveTables, calcTravelDays, calcEntitledDays, calcSeniority } from "./db.js";
+import { listWorkingShifts, allocateLeaveDays, type ShiftConfig } from "./leaveCalc.js";
 dotenv.config();
 
 initLeaveTables().catch((e: any) => console.error("Failed to initialize SQL leave tables:", e.message));
@@ -440,15 +440,24 @@ async function getQuotaByYear(name: string, workshopId: string, excludeLeaveId?:
   }
   for (const y of extraYears) if (y) ensure(String(y));
 
-  // A row in leave_balances overrides the computed figure for that year.
+  // A row in leave_balances overrides the computed figures for that year. The two
+  // overrides are separate: a row written to record days taken outside the system
+  // leaves entitled NULL, and must not be read as "entitlement is 0, set by hand".
   const balances = await sqlPool.query(
-    `SELECT year, entitled FROM leave_balances WHERE workshop_id = $1 AND lower(trim(name)) = lower(trim($2))`,
+    `SELECT year, entitled, used_adjust FROM leave_balances
+     WHERE workshop_id = $1 AND lower(trim(name)) = lower(trim($2))`,
     [workshopId, name]
   );
+  const usedAdjustByYear = new Map<string, number>();
   for (const row of balances.rows) {
     const q = ensure(String(row.year));
-    q.entitled = toNum(row.entitled);
-    q.source = "manual";
+    if (row.entitled !== null && row.entitled !== undefined) {
+      q.entitled = toNum(row.entitled);
+      q.source = "manual";
+    }
+    if (row.used_adjust !== null && row.used_adjust !== undefined) {
+      usedAdjustByYear.set(String(row.year), toNum(row.used_adjust));
+    }
   }
 
   const travel = await sqlPool.query(
@@ -469,6 +478,11 @@ async function getQuotaByYear(name: string, workshopId: string, excludeLeaveId?:
     [workshopId, name, excludeLeaveId || null]
   );
   for (const row of used.rows) ensure(String(row.leave_year)).used = toNum(row.days);
+
+  // Added on top of the summed requests, not substituted for them. Years whose leave
+  // was all taken before this system existed have an adjustment and no requests at
+  // all, so this runs over the adjustments rather than over the rows above.
+  for (const [year, adjust] of usedAdjustByYear) ensure(year).used += adjust;
 
   for (const q of Object.values(quotas)) q.remaining = q.entitled + q.travelDays - q.used;
   return quotas;
@@ -653,15 +667,16 @@ app.get("/api/leave/employees", async (req, res) => {
 });
 
 app.post("/api/leave/employees/import", express.json({ limit: "5mb" }), async (req, res) => {
-  const { rows, replaceAll, workshopId } = req.body;
+  const { rows, replaceAll, workshopId, year } = req.body;
   if (!workshopId) {
     return res.status(400).json({ error: "Thiếu phân xưởng." });
   }
   if (!Array.isArray(rows) || rows.length === 0) {
     return res.status(400).json({ error: "Không có dòng dữ liệu nào để nhập." });
   }
+  const importYear = /^\d{4}$/.test(String(year)) ? String(year) : String(new Date().getFullYear());
 
-  const valid: { name: string; hireYear: number; baseDays: number }[] = [];
+  const valid: { name: string; hireYear: number; baseDays: number; used?: number }[] = [];
   const skipped: string[] = [];
 
   for (const row of rows) {
@@ -676,7 +691,21 @@ app.post("/api/leave/employees/import", express.json({ limit: "5mb" }), async (r
       skipped.push(`${name}: mức phép cơ bản không hợp lệ`);
       continue;
     }
-    valid.push({ name, hireYear, baseDays: Math.round(baseDays) });
+
+    // Absent means "leave the days-used figure alone"; a 0 in the sheet is a real
+    // instruction to set it to zero. The two must not collapse into each other, or a
+    // file exported from the older template would silently wipe recorded days.
+    let used: number | undefined;
+    if (row?.used !== undefined && row?.used !== null && String(row.used).trim() !== "") {
+      const n = Number(row.used);
+      if (!Number.isFinite(n) || n < 0 || n > 366) {
+        skipped.push(`${name}: số ngày đã nghỉ không hợp lệ`);
+        continue;
+      }
+      used = n;
+    }
+
+    valid.push({ name, hireYear, baseDays: Math.round(baseDays), used });
   }
 
   if (valid.length === 0) {
@@ -695,13 +724,38 @@ app.post("/api/leave/employees/import", express.json({ limit: "5mb" }), async (r
         [emp.name, emp.hireYear, emp.baseDays, workshopId]
       );
     }
+
+    // Same rule as editing the cell by hand: the sheet gives the total to display, and
+    // what gets stored is the part not already covered by saved requests. One grouped
+    // query rather than a lookup per person, so a 78-row sheet stays a single round trip.
+    const withUsed = valid.filter(v => v.used !== undefined);
+    if (withUsed.length > 0) {
+      const agg = await client.query(
+        `SELECT lower(trim(r.name)) AS key, SUM(a.days) AS days FROM leave_allocations a
+         JOIN leave_requests r ON r.id = a.leave_id
+         WHERE r.workshop_id = $1 AND a.leave_year = $2 GROUP BY lower(trim(r.name))`,
+        [workshopId, importYear]
+      );
+      const computedByName = new Map(agg.rows.map((r: any) => [r.key, toNum(r.days)]));
+
+      for (const emp of withUsed) {
+        const computed = computedByName.get(emp.name.trim().toLowerCase()) || 0;
+        await client.query(
+          `INSERT INTO leave_balances (name, year, used_adjust, workshop_id) VALUES ($1,$2,$3,$4)
+           ON CONFLICT (workshop_id, name, year) DO UPDATE SET used_adjust = EXCLUDED.used_adjust, updated_at = now()`,
+          [emp.name, importYear, String((emp.used as number) - computed), workshopId]
+        );
+      }
+    }
     await client.query("COMMIT");
 
+    const usedNote = withUsed.length > 0 ? ` Đã ghi số ngày đã nghỉ năm ${importYear} cho ${withUsed.length} người.` : "";
     res.json({
       success: true,
       imported: valid.length,
+      usedImported: withUsed.length,
       skipped,
-      message: `✅ Đã nhập ${valid.length} nhân viên từ Excel.${skipped.length > 0 ? ` Bỏ qua ${skipped.length} dòng lỗi.` : ""}`
+      message: `✅ Đã nhập ${valid.length} nhân viên từ Excel.${usedNote}${skipped.length > 0 ? ` Bỏ qua ${skipped.length} dòng lỗi.` : ""}`
     });
   } catch (error: any) {
     await client.query("ROLLBACK").catch(() => {});
@@ -739,7 +793,7 @@ app.get("/api/leave/balances", async (req, res) => {
     // Four aggregate queries instead of a per-person round trip, so 78 staff stay fast.
     const [employees, overrides, travel, used] = await Promise.all([
       sqlPool.query(`SELECT name, hire_year, base_days FROM employees WHERE workshop_id = $1`, [workshopId]),
-      sqlPool.query(`SELECT name, entitled FROM leave_balances WHERE workshop_id = $1 AND year = $2`, [workshopId, year]),
+      sqlPool.query(`SELECT name, entitled, used_adjust FROM leave_balances WHERE workshop_id = $1 AND year = $2`, [workshopId, year]),
       sqlPool.query(
         `SELECT lower(trim(name)) AS key, SUM(travel_days) AS days FROM leave_requests
          WHERE workshop_id = $1 AND leave_year = $2 AND travel_days > 0 GROUP BY lower(trim(name))`,
@@ -769,9 +823,23 @@ app.get("/api/leave/balances", async (req, res) => {
       });
     }
 
+    // A row here can carry either override independently. One written only to record
+    // days taken outside the system leaves entitled NULL, which must not be read as
+    // an entitlement of 0 set by hand — that would wipe out the seniority figure.
+    const usedAdjustByName = new Map<string, number>();
     for (const ov of overrides.rows) {
       const k = key(ov.name);
       const existing = rows.get(k);
+      if (ov.used_adjust !== null && ov.used_adjust !== undefined) {
+        usedAdjustByName.set(k, toNum(ov.used_adjust));
+      }
+      if (ov.entitled === null || ov.entitled === undefined) {
+        // Keep the person visible even if they have no employees row to derive from.
+        if (!existing) {
+          rows.set(k, { name: ov.name, year, entitled: 0, seniority: null, source: "seniority" as const });
+        }
+        continue;
+      }
       rows.set(k, {
         name: existing?.name || ov.name,
         year,
@@ -783,8 +851,9 @@ app.get("/api/leave/balances", async (req, res) => {
 
     const out = [...rows.entries()].map(([k, row]) => {
       const travelDays = travelByName.get(k) || 0;
-      const usedDays = usedByName.get(k) || 0;
-      return { ...row, travelDays, used: usedDays, remaining: row.entitled + travelDays - usedDays };
+      const usedAdjust = usedAdjustByName.get(k) || 0;
+      const usedDays = (usedByName.get(k) || 0) + usedAdjust;
+      return { ...row, travelDays, used: usedDays, usedAdjust, remaining: row.entitled + travelDays - usedDays };
     });
     out.sort((a, b) => a.name.localeCompare(b.name, "vi"));
 
@@ -814,6 +883,56 @@ app.post("/api/leave/balances", async (req, res) => {
   } catch (error: any) {
     console.error("Error saving leave balance:", error);
     res.status(500).json({ error: "Lưu phép năm thất bại", details: error.message });
+  }
+});
+
+// Correct the days-used figure. The caller sends the total it wants to see; what gets
+// stored is the difference against the days already summed from saved requests, so the
+// figure keeps tracking requests entered later instead of freezing at the typed number.
+// Storing the total verbatim would look right today and drift silently from then on.
+app.post("/api/leave/balances/used", async (req, res) => {
+  const { name, year, used, workshopId } = req.body;
+  if (!name || !year) {
+    return res.status(400).json({ error: "Thiếu tên nhân viên hoặc năm." });
+  }
+  if (!workshopId) {
+    return res.status(400).json({ error: "Thiếu phân xưởng." });
+  }
+  const desired = toNum(used);
+  if (desired < 0) {
+    return res.status(400).json({ error: "Số ngày đã nghỉ không được là số âm." });
+  }
+
+  try {
+    const fromRequests = await sqlPool.query(
+      `SELECT COALESCE(SUM(a.days), 0) AS days FROM leave_allocations a
+       JOIN leave_requests r ON r.id = a.leave_id
+       WHERE r.workshop_id = $1 AND lower(trim(r.name)) = lower(trim($2)) AND a.leave_year = $3`,
+      [workshopId, name, String(year)]
+    );
+    const computed = toNum(fromRequests.rows[0]?.days);
+    const adjust = desired - computed;
+
+    // Only used_adjust is written. Touching entitled here would flip the row to a
+    // manual entitlement override and stop it growing with seniority.
+    await sqlPool.query(
+      `INSERT INTO leave_balances (name, year, used_adjust, workshop_id) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (workshop_id, name, year) DO UPDATE SET used_adjust = EXCLUDED.used_adjust, updated_at = now()`,
+      [String(name).trim(), String(year), String(adjust), workshopId]
+    );
+
+    const note = computed > 0
+      ? ` (${computed} ngày từ đơn đã lưu + ${adjust} ngày ghi nhận thủ công)`
+      : adjust > 0 ? ` (ghi nhận thủ công, chưa có đơn nào trong hệ thống)` : "";
+    res.json({
+      success: true,
+      computed,
+      adjust,
+      message: `✅ Đã đặt số ngày đã nghỉ năm ${year} của đồng chí ${name} thành ${desired}${note}.`
+    });
+  } catch (error: any) {
+    console.error("Error saving used days:", error);
+    res.status(500).json({ error: "Lưu số ngày đã nghỉ thất bại", details: error.message });
   }
 });
 
@@ -2414,13 +2533,17 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
-
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
   }
+
+  // Listen on port in BOTH dev and production
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+  });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
+});
 
 export default app;

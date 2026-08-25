@@ -113,6 +113,14 @@ export async function initLeaveTables() {
     END $$;
   `);
 
+  // Days taken outside this system — leave used before the company started keeping
+  // requests here, or a correction an admin makes by hand. Kept apart from the days
+  // summed out of leave_allocations rather than replacing them, so a request saved
+  // after the correction still adds to the total instead of being swallowed by a
+  // frozen figure. A row may carry this with entitled left NULL: the two overrides
+  // are independent, and setting one must not turn the other on.
+  await pool.query(`ALTER TABLE leave_balances ADD COLUMN IF NOT EXISTS used_adjust TEXT;`);
+
   // Entitlement is derived from hire year, so it grows on its own as seniority accrues.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS employees (

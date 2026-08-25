@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { API_BASE } from '../utils/api';
 import { 
   Upload, Trash2, CheckCircle2, Search
 } from 'lucide-react';
@@ -41,7 +42,7 @@ export default function SignatureManager({ staffList, signatures, onSignaturesCh
       const base64 = e.target?.result as string;
       setSaving(name);
       try {
-        const res = await fetch('/api/signatures', {
+        const res = await fetch(API_BASE + '/api/signatures', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, data: base64, workshopId })
@@ -112,7 +113,7 @@ export default function SignatureManager({ staffList, signatures, onSignaturesCh
 
     if (matchedItems.length > 0) {
       try {
-        const res = await fetch('/api/signatures/batch', {
+        const res = await fetch(API_BASE + '/api/signatures/batch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ items: matchedItems, workshopId })
@@ -154,7 +155,7 @@ export default function SignatureManager({ staffList, signatures, onSignaturesCh
       delete newSigs[name];
       onSignaturesChange(newSigs);
       
-      await fetch('/api/signatures', {
+      await fetch(API_BASE + '/api/signatures', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, data: '', workshopId })

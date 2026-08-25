@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, Lock, ArrowRight, Eye, EyeOff, Sparkles, UserPlus, Building2, X } from 'lucide-react';
 import { UserAccount } from '../types/auth';
+import { API_BASE } from '../utils/api';
 
 interface LoginFormProps {
   onLoginSuccess: (user: UserAccount) => void;
@@ -29,7 +30,7 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
   // Hide the entry point once that window has closed so it cannot mislead.
 
   useEffect(() => {
-    fetch('/api/setup/status')
+    fetch(API_BASE + '/api/setup/status')
       .then(r => r.json())
   }, []);
 
@@ -69,7 +70,7 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
       // One server call creates the workshop, the account and the session together.
       // The server fixes the role at workshop_admin and ignores anything sent here,
       // so signing up can never hand out Super Admin.
-      const regRes = await fetch('/api/auth/register', {
+      const regRes = await fetch(API_BASE + '/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -115,7 +116,7 @@ export default function LoginForm({ onLoginSuccess, isEmbedded = false }: LoginF
     setError(null);
 
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(API_BASE + '/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: username.trim(), password: password.trim() })

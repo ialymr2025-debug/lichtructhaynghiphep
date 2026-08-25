@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { API_BASE } from '../utils/api';
 import { UserAccount, Workshop, WorkshopFeatures, WorkshopConfig } from '../types/auth';
 import { SHIFTS, RULES } from '../constants';
 import StaffDataEditor from './StaffDataEditor';
@@ -40,7 +41,7 @@ export default function WorkshopManagerModal({
   const loadAudit = async () => {
     setAuditLoading(true);
     try {
-      const res = await fetch('/api/audit-log?limit=300');
+      const res = await fetch(API_BASE + '/api/audit-log?limit=300');
       const data = await res.json();
       setAuditRows(Array.isArray(data) ? data : []);
     } catch (e) {
@@ -507,7 +508,7 @@ export default function WorkshopManagerModal({
   const fetchAccounts = async () => {
     setLoadingAccounts(true);
     try {
-      const res = await fetch('/api/accounts');
+      const res = await fetch(API_BASE + '/api/accounts');
       if (res.ok) {
         const data = await res.json();
         setAccounts(data);
@@ -546,7 +547,7 @@ export default function WorkshopManagerModal({
           throw new Error('Vui lòng nhập Tên Phân xưởng mới.');
         }
 
-        const wsRes = await fetch('/api/workshops', {
+        const wsRes = await fetch(API_BASE + '/api/workshops', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -582,7 +583,7 @@ export default function WorkshopManagerModal({
       }
 
       // Step 2: Create Admin Account
-      const accRes = await fetch('/api/accounts', {
+      const accRes = await fetch(API_BASE + '/api/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -817,7 +818,7 @@ export default function WorkshopManagerModal({
         features
       };
 
-      const res = await fetch('/api/workshops', {
+      const res = await fetch(API_BASE + '/api/workshops', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -879,7 +880,7 @@ export default function WorkshopManagerModal({
     setMsg(null);
 
     try {
-      const res = await fetch('/api/accounts', {
+      const res = await fetch(API_BASE + '/api/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -971,7 +972,7 @@ export default function WorkshopManagerModal({
         payload.password = editPassword.trim();
       }
 
-      const res = await fetch('/api/accounts', {
+      const res = await fetch(API_BASE + '/api/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)

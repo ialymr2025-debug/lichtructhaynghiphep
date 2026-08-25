@@ -12,6 +12,7 @@ import LoginForm from './components/LoginForm';
 import WorkshopManagerModal from './components/WorkshopManagerModal';
 import { UserAccount, Workshop } from './types/auth';
 import { Trash2, Settings, LogOut, User } from 'lucide-react';
+import { API_BASE } from './utils/api';
 
 export default function App() {
   const [staffData, setStaffData] = useState<string[][]>(() => {
@@ -112,7 +113,7 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/auth/me');
+        const res = await fetch(API_BASE + '/api/auth/me');
         if (cancelled) return;
         if (res.ok) {
           const data = await res.json();
@@ -150,7 +151,7 @@ export default function App() {
 
   const fetchWorkshops = useCallback(async () => {
     try {
-      const res = await fetch('/api/workshops');
+      const res = await fetch(API_BASE + '/api/workshops');
       const data = await res.json();
       if (Array.isArray(data)) {
         setWorkshops(data);
@@ -178,7 +179,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    fetch(API_BASE + '/api/auth/logout', { method: 'POST' }).catch(() => {});
     localStorage.removeItem('auth_user');
     setCurrentUser(null);
     setWorkshops([]);
@@ -276,7 +277,7 @@ export default function App() {
   }, [leaveData.name, fetchLeaveBalance]);
 
   useEffect(() => {
-    fetch('/api/leave/locations')
+    fetch(API_BASE + '/api/leave/locations')
       .then(res => res.json())
       .then(data => { if (Array.isArray(data)) setLocationOptions(data); })
       .catch(() => {});
@@ -458,7 +459,7 @@ export default function App() {
 
     const saveSettings = async () => {
       try {
-        await fetch('/api/workshops', {
+        await fetch(API_BASE + '/api/workshops', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -845,7 +846,7 @@ export default function App() {
           remaining: leaveBalance.remaining
         } : null
       };
-      const res = await fetch('/api/sheets/leave-requests', {
+      const res = await fetch(API_BASE + '/api/sheets/leave-requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -952,7 +953,7 @@ export default function App() {
       onConfirm: async () => {
         setIsLoadingWaitingLeaves(true);
         try {
-          const res = await fetch('/api/sheets/leave-requests/delete', {
+          const res = await fetch(API_BASE + '/api/sheets/leave-requests/delete', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json'
@@ -991,7 +992,7 @@ export default function App() {
 
       // 2. Update waiting leaves status to 'Đã xử lý'
       if (selectedWaitingLeaveIds.length > 0) {
-        const updateRes = await fetch('/api/sheets/leave-requests/update-status', {
+        const updateRes = await fetch(API_BASE + '/api/sheets/leave-requests/update-status', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1152,10 +1153,17 @@ export default function App() {
           </div>
           {/* App Title with separator */}
           <div className="border-l border-slate-200 pl-2.5 sm:pl-4 py-0.5 flex flex-col justify-center h-full text-left min-w-0">
-            <div className="text-[#053d6c] font-black text-[12px] sm:text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5 truncate">
+            {/* Deliberately not `truncate`, which is overflow:hidden and so clips both axes.
+                These lines pair a heavy weight with leading-tight, and the resulting line box
+                is shorter than the ink: measured clearance above the text was 1px at 16px and
+                -0.5px at the 12px mobile size. That shaves the top off tall diacritics — the
+                hook on Ủ lost its loop and the leftover tail read as an acute, turning
+                "THỦY" into "THUÝ". Clipping only the inline axis keeps the ellipsis
+                behaviour while letting marks overflow upward. */}
+            <div className="text-[#053d6c] font-black text-[12px] sm:text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5 whitespace-nowrap text-ellipsis overflow-x-clip">
               {activeWorkshop?.config?.companyName || 'CÔNG TY THỦY ĐIỆN IALY'}
             </div>
-            <div className="text-[#053d6c] font-black text-[12px] sm:text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5 truncate">
+            <div className="text-[#053d6c] font-black text-[12px] sm:text-base md:text-xl font-sans tracking-tight leading-tight mt-0.5 whitespace-nowrap text-ellipsis overflow-x-clip">
               {activeWorkshop ? activeWorkshop.name : 'Phân xưởng Vận hành Ialy'}
             </div>
           </div>
@@ -2254,15 +2262,19 @@ export default function App() {
                   {isSavingLeaveToSheets ? 'Đang lưu đơn...' : 'Lưu đơn & Tải xuống Word'}
                 </button>
               ) : (
-                <button 
-                  className="btn btn-primary flex items-center justify-center gap-1.5" 
-                  onClick={() => {
-                    handleExportAllZipAndUpdateStatus();
+                // Downloads the shift schedule on its own. Bundling the leave request
+                // documents alongside it lives on the dedicated "Tạo lịch thay ca và các
+                // đơn nghỉ phép" button instead, because that one also flips the selected
+                // requests to "Đã xử lý" — a side effect nobody expects from a preview.
+                <button
+                  className="btn btn-primary flex items-center justify-center gap-1.5"
+                  onClick={async () => {
+                    await handleExportWord();
                     setShowPreview(false);
                   }}
                   disabled={isProcessing}
                 >
-                  {isProcessing ? <span className="spin spinw mr-2"></span> : '🎁'} Tạo lịch thay ca và các đơn nghỉ phép
+                  {isProcessing ? <span className="spin spinw mr-2"></span> : '📥'} Tải xuống Word
                 </button>
               )}
             </div>
